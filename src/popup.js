@@ -54,10 +54,11 @@ copyButton.addEventListener("click", async () => {
   }
 
   try {
-    await navigator.clipboard.writeText(JSON.stringify(capture, null, 2));
+    const copyPayload = buildCopyPayload(capture);
+    await navigator.clipboard.writeText(JSON.stringify(copyPayload, null, 2));
     setMessage(stored[LATEST_CAPTURE_STORAGE_KEY]
-      ? "Захват скопирован. Viewer тоже сможет его открыть."
-      : "Последний захват скопирован из локальной копии.");
+      ? "Скопирован захват: DOM-структура и API-ответы."
+      : "Скопирован последний локальный захват: DOM-структура и API-ответы.");
   } catch {
     setMessage("Не удалось скопировать.");
   }
@@ -142,4 +143,67 @@ function simplifyOrigin(origin) {
   } catch {
     return origin;
   }
+}
+
+
+function buildCopyPayload(capture) {
+  const domElement = capture?.dom?.outerHTML
+    ? new DOMParser().parseFromString(capture.dom.outerHTML, "text/html").body.firstElementChild
+    : null;
+
+  return {
+    dom: domElement ? buildDomTreeSnapshot(domElement) : null,
+    api: (capture?.network || []).map((request) => ({
+      method: request.method || "GET",
+      url: request.url || "",
+      status: request.status || 0,
+      requestBody: request.requestBody || "",
+      responseBody: request.responseBody || ""
+    }))
+  };
+}
+
+function buildDomTreeSnapshot(node) {
+  if (!(node instanceof Element)) {
+    return null;
+  }
+
+  const item = { tag: node.tagName.toLowerCase() };
+  const attrs = {};
+
+  Array.from(node.attributes || []).forEach((attribute) => {
+    const name = attribute.name.toLowerCase();
+    if (name === "class" || name === "style") {
+      return;
+    }
+    attrs[name] = attribute.value;
+  });
+
+  if (Object.keys(attrs).length > 0) {
+    item.attrs = attrs;
+  }
+
+  const children = [];
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const nested = buildDomTreeSnapshot(child);
+      if (nested) {
+        children.push(nested);
+      }
+      return;
+    }
+
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = String(child.textContent || "").replace(/\s+/g, " ").trim();
+      if (text) {
+        children.push({ text });
+      }
+    }
+  });
+
+  if (children.length > 0) {
+    item.children = children;
+  }
+
+  return item;
 }

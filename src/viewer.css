@@ -810,3 +810,50 @@ pre {
     display: none;
   }
 }
+
+
+.copy-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.copy-chip {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 6px 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.copy-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+
+.api-copy-selector {
+  display: grid;
+  gap: 10px;
+}
+
+.api-copy-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.api-copy-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.api-copy-row small {
+  display: block;
+  color: var(--muted);
+}
