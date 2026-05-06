@@ -2,6 +2,7 @@ const NETWORK_EVENT = "__VOROVAYKA_NETWORK_EVENT__";
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
+const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
 const MAX_REQUEST_CHARS = 20 * 1024;
@@ -17,9 +18,33 @@ const MAX_REQUEST_FACTS = 180;
 const MAX_BINDINGS = 160;
 const MAX_CANDIDATES = 12;
 const MAX_API_DEPENDENCIES = 16;
+const MAX_EVIDENCE_TIMELINE_EVENTS = 80;
+const MAX_ANALYSIS_DIAGNOSTICS = 18;
 const MAX_JSON_VISITED_VALUES = 6000;
 const MAX_JSON_ARRAY_ITEMS = 250;
 const MAX_JSON_OBJECT_KEYS = 250;
+const STORAGE_PROFILES = {
+  normal: {
+    responseBodyChars: 12 * 1024,
+    requestBodyChars: 4 * 1024,
+    stackChars: 2 * 1024,
+    responseFacts: 1800,
+    siblingFields: 16,
+    domHtmlChars: 24 * 1024,
+    previewHtmlChars: 32 * 1024,
+    mutationTrace: 20
+  },
+  tight: {
+    responseBodyChars: 1500,
+    requestBodyChars: 1000,
+    stackChars: 800,
+    responseFacts: 600,
+    siblingFields: 8,
+    domHtmlChars: 8 * 1024,
+    previewHtmlChars: 12 * 1024,
+    mutationTrace: 8
+  }
+};
 const POST_CLICK_WINDOW_MS = 1500;
 const DOM_RENDER_EVIDENCE_WINDOW_MS = 5000;
 const UI_ROOT_ID = "vorovayka-root";
@@ -1249,13 +1274,199 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
     cloneSpec: elementRecipe,
     network: selected
   };
-  await chrome.storage.local.set({
-    [LATEST_CAPTURE_STORAGE_KEY]: capture,
-    [COPYABLE_CAPTURE_STORAGE_KEY]: capture
-  });
+  await persistCaptureToStorage(capture, reportProgress);
   reportProgress("Планирую автоочистку временных данных...", 98);
   await yieldToBrowser();
   await chrome.runtime.sendMessage({ type: "SCHEDULE_CAPTURE_EXPIRY" });
+}
+
+async function persistCaptureToStorage(capture, reportProgress = () => {}) {
+  await chrome.storage.local.remove([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
+
+  const normalCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.normal, "normal");
+  try {
+    await writeCaptureToStorage(normalCapture);
+    return;
+  } catch (error) {
+    if (!isQuotaExceededError(error)) {
+      throw error;
+    }
+  }
+
+  reportProgress("Сжимаю capture для storage quota...", 94);
+  await yieldToBrowser();
+  await chrome.storage.local.remove([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
+  const tightCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.tight, "tight");
+  await writeCaptureToStorage(tightCapture);
+}
+
+async function writeCaptureToStorage(capture) {
+  await chrome.storage.local.set({
+    [COPYABLE_CAPTURE_STORAGE_KEY]: capture,
+    [LATEST_CAPTURE_STORAGE_KEY]: {
+      [CAPTURE_REF_MARK]: true,
+      storageKey: COPYABLE_CAPTURE_STORAGE_KEY,
+      createdAt: capture.createdAt,
+      page: capture.page || {}
+    }
+  });
+}
+
+function isQuotaExceededError(error) {
+  return /quota/i.test(String(error?.message || error || ""));
+}
+
+function compactCaptureForStorage(capture, limits, profile) {
+  const recipe = compactRecipeForStorage(capture.cloneSpec || capture.elementRecipe, limits);
+  return {
+    createdAt: capture.createdAt,
+    page: capture.page,
+    interaction: capture.interaction,
+    dom: compactDomForStorage(capture.dom, limits),
+    mutationTrace: compactMutationTrace(capture.mutationTrace, limits),
+    elementRecipe: recipe,
+    cloneSpec: recipe,
+    network: (capture.network || []).map((record) => compactNetworkRecordForStorage(record, limits)),
+    storageMeta: {
+      profile,
+      latestCaptureUsesRef: true,
+      rawResponseBodiesTruncated: true
+    }
+  };
+}
+
+function compactDomForStorage(dom = {}, limits) {
+  return {
+    ...dom,
+    outerHTML: truncateText(String(dom.outerHTML || ""), limits.domHtmlChars),
+    previewHTML: truncateText(String(dom.previewHTML || ""), limits.previewHtmlChars),
+    innerText: truncateText(String(dom.innerText || ""), MAX_TEXT_CHARS),
+    facts: (dom.facts || []).slice(0, MAX_DOM_FACTS).map(compactFact)
+  };
+}
+
+function compactMutationTrace(trace = [], limits) {
+  return (trace || []).slice(-limits.mutationTrace).map((record) => ({
+    id: record.id,
+    timestamp: record.timestamp,
+    selector: record.selector,
+    textPreview: truncateText(String(record.textPreview || ""), 300),
+    facts: (record.facts || []).slice(0, 8).map(compactFact)
+  }));
+}
+
+function compactNetworkRecordForStorage(record, limits) {
+  const responseBody = String(record.responseBody || "");
+  return {
+    id: record.id,
+    url: record.url,
+    method: record.method,
+    status: record.status,
+    timestamp: record.timestamp,
+    contentType: record.contentType,
+    requestBody: truncateText(String(record.requestBody || ""), limits.requestBodyChars),
+    initiatorStack: truncateText(String(record.initiatorStack || ""), limits.stackChars),
+    responseBody: truncateText(responseBody, limits.responseBodyChars),
+    bodyTooLarge: Boolean(record.bodyTooLarge || responseBody.length > limits.responseBodyChars),
+    requestHeaders: record.requestHeaders || {},
+    responseHeaders: record.responseHeaders || {}
+  };
+}
+
+function compactRecipeForStorage(recipe = {}, limits) {
+  const bindings = (recipe.bindings || []).slice(0, MAX_BINDINGS).map((binding) => compactBindingForStorage(binding, limits));
+  const referencedResponseFacts = new Set(bindings.map((binding) => binding.responseFactId).filter(Boolean));
+  return {
+    ...recipe,
+    responseFacts: compactResponseFactsForStorage(recipe.responseFacts || [], referencedResponseFacts, limits),
+    bindings,
+    dataRequirements: (recipe.dataRequirements || []).slice(0, MAX_BINDINGS).map((item) => compactDataRequirementForStorage(item, limits)),
+    renderEvidence: (recipe.renderEvidence || []).slice(0, MAX_BINDINGS),
+    apiSequence: (recipe.apiSequence || []).map((step) => compactApiStepForStorage(step, limits)),
+    storageMeta: {
+      ...(recipe.storageMeta || {}),
+      responseFactsCompacted: true
+    }
+  };
+}
+
+function compactResponseFactsForStorage(facts, referencedIds, limits) {
+  const selected = [];
+  const seen = new Set();
+  const add = (fact) => {
+    if (!fact?.id || seen.has(fact.id) || selected.length >= limits.responseFacts) {
+      return;
+    }
+    seen.add(fact.id);
+    selected.push(compactResponseFactForStorage(fact, limits));
+  };
+
+  facts.forEach((fact) => {
+    if (referencedIds.has(fact.id)) {
+      add(fact);
+    }
+  });
+  facts.forEach(add);
+  return selected;
+}
+
+function compactResponseFactForStorage(fact, limits) {
+  return {
+    ...fact,
+    value: truncateText(String(fact.value || ""), 160),
+    siblingFields: compactSiblingFields(fact.siblingFields, limits)
+  };
+}
+
+function compactBindingForStorage(binding, limits) {
+  return {
+    ...binding,
+    responseValue: truncateText(String(binding.responseValue || ""), 160),
+    domValue: truncateText(String(binding.domValue || ""), 160),
+    response: {
+      ...(binding.response || {}),
+      siblingFields: compactSiblingFields(binding.response?.siblingFields, limits)
+    },
+    evidence: (binding.evidence || []).slice(0, 3)
+  };
+}
+
+function compactDataRequirementForStorage(item, limits) {
+  return {
+    ...item,
+    value: truncateText(String(item.value || ""), 160),
+    domValue: truncateText(String(item.domValue || ""), 160),
+    evidence: (item.evidence || []).slice(0, 3),
+    response: item.response ? {
+      ...item.response,
+      siblingFields: compactSiblingFields(item.response.siblingFields, limits)
+    } : item.response
+  };
+}
+
+function compactApiStepForStorage(step, limits) {
+  return {
+    ...step,
+    request: {
+      ...(step.request || {}),
+      body: truncateText(String(step.request?.body || ""), limits.requestBodyChars),
+      initiatorStack: truncateText(String(step.request?.initiatorStack || ""), limits.stackChars)
+    },
+    response: {
+      ...(step.response || {}),
+      bodyPreview: truncateText(String(step.response?.bodyPreview || ""), limits.responseBodyChars),
+      matchedFields: (step.response?.matchedFields || []).slice(0, 80)
+    },
+    bindings: (step.bindings || []).slice(0, 80)
+  };
+}
+
+function compactSiblingFields(fields = {}, limits) {
+  return Object.fromEntries(
+    Object.entries(fields || {})
+      .slice(0, limits.siblingFields)
+      .map(([key, value]) => [key, truncateText(String(value), 160)])
+  );
 }
 
 async function buildElementRecipe(dom, network, interaction, mutationTrace = [], reportProgress = () => {}) {
@@ -1282,17 +1493,21 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
 
   reportProgress("Собираю API-последовательность...", 78);
   await yieldToBrowser();
-  const apiSequence = orderedNetwork.map((request, index) => {
+  const rawApiSequence = orderedNetwork.map((request, index) => {
     const requestId = getRequestId(request, index + 1);
     const requestBindings = bindings.filter((binding) => binding.requestId === requestId);
 
     return {
       requestId,
       step: index + 1,
+      originalStep: index + 1,
       method: request.method || "GET",
       url: request.url || "",
+      apiSignature: buildApiSignature(request.method || "GET", request.url || ""),
+      normalizedUrl: normalizeApiUrlForDisplay(request.url || ""),
       status: request.status || 0,
       contentType: request.contentType || "",
+      timestamp: request.timestamp || null,
       calledAt: formatIsoTimestamp(request.timestamp),
       relativeToInteractionMs: calculateRelativeTime(request.timestamp, interaction?.timestamp),
       request: {
@@ -1309,10 +1524,12 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
       bindings: requestBindings.map(compactBindingForStep)
     };
   });
+  const apiSequence = dedupeApiSequence(rawApiSequence);
 
   reportProgress("Ищу зависимости между API-вызовами...", 82);
   await yieldToBrowser();
   const apiDependencies = buildApiDependencies(orderedNetwork, responseFacts);
+  const analysisDiagnostics = buildAnalysisDiagnostics(domFacts, responseFacts, bindings, orderedNetwork, mutationTrace);
 
   const dataRequirements = bindings.map(bindingToDataRequirement);
   const renderEvidence = bindings
@@ -1320,6 +1537,14 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
     .filter((evidence, index, list) => (
       index === list.findIndex((item) => item.mutationId === evidence.mutationId && item.bindingId === evidence.bindingId)
     ));
+  const evidenceTimeline = buildEvidenceTimeline({
+    interaction,
+    apiSequence,
+    apiDependencies,
+    bindings,
+    renderEvidence,
+    analysisDiagnostics
+  });
 
   reportProgress("Формирую cloneSpec для viewer...", 86);
   await yieldToBrowser();
@@ -1342,11 +1567,528 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
     responseFacts,
     bindings,
     renderEvidence,
+    evidenceTimeline,
+    analysisDiagnostics,
     apiSequence,
     apiDependencies,
     dataRequirements,
     sequence: buildSequenceSummary(apiDependencies)
   };
+}
+
+function dedupeApiSequence(steps = []) {
+  const groups = new Map();
+
+  steps.forEach((step) => {
+    const signature = step.apiSignature || buildApiSignature(step.method, step.url);
+    const group = groups.get(signature) || [];
+    group.push({
+      ...step,
+      apiSignature: signature,
+      normalizedUrl: step.normalizedUrl || normalizeApiUrlForDisplay(step.url || "")
+    });
+    groups.set(signature, group);
+  });
+
+  return Array.from(groups.values())
+    .map(mergeApiStepGroup)
+    .sort((a, b) => Number(a.originalStep || a.step || 0) - Number(b.originalStep || b.step || 0))
+    .map((step, index) => ({
+      ...step,
+      step: index + 1,
+      displayStep: index + 1
+    }));
+}
+
+function mergeApiStepGroup(steps) {
+  const ordered = [...steps].sort((a, b) => Number(a.originalStep || a.step || 0) - Number(b.originalStep || b.step || 0));
+  const representative = selectRepresentativeApiStep(ordered);
+  const matchedFields = dedupeMatchedFields(ordered.flatMap((step) => step.response?.matchedFields || []));
+  const bindings = dedupeStepBindings(ordered.flatMap((step) => step.bindings || []));
+  const timestamps = ordered
+    .map((step) => Number(step.timestamp || 0))
+    .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0);
+  const firstTimestamp = timestamps.length ? Math.min(...timestamps) : null;
+  const lastTimestamp = timestamps.length ? Math.max(...timestamps) : null;
+
+  return {
+    ...representative,
+    originalStep: representative.originalStep || representative.step,
+    duplicateCount: ordered.length,
+    duplicateRequestIds: ordered.map((step) => step.requestId).filter(Boolean),
+    duplicateSteps: ordered.map((step) => step.originalStep || step.step).filter(Boolean),
+    deduped: ordered.length > 1,
+    firstTimestamp,
+    lastTimestamp,
+    calledAt: formatIsoTimestamp(representative.timestamp || firstTimestamp),
+    response: {
+      ...(representative.response || {}),
+      matchedFields
+    },
+    bindings,
+    collapsedRequests: ordered.map((step) => ({
+      requestId: step.requestId,
+      originalStep: step.originalStep || step.step,
+      status: step.status || 0,
+      calledAt: step.calledAt || formatIsoTimestamp(step.timestamp),
+      matchedFields: step.response?.matchedFields?.length || 0
+    }))
+  };
+}
+
+function selectRepresentativeApiStep(steps) {
+  return [...steps].sort((a, b) => {
+    const fieldDiff = Number(b.response?.matchedFields?.length || 0) - Number(a.response?.matchedFields?.length || 0);
+    if (fieldDiff !== 0) {
+      return fieldDiff;
+    }
+
+    const statusDiff = Number(isSuccessfulStatus(b.status)) - Number(isSuccessfulStatus(a.status));
+    if (statusDiff !== 0) {
+      return statusDiff;
+    }
+
+    const bodyDiff = String(b.response?.bodyPreview || "").length - String(a.response?.bodyPreview || "").length;
+    if (bodyDiff !== 0) {
+      return bodyDiff;
+    }
+
+    return Number(a.originalStep || a.step || 0) - Number(b.originalStep || b.step || 0);
+  })[0] || steps[0] || {};
+}
+
+function isSuccessfulStatus(status) {
+  const number = Number(status);
+  return Number.isFinite(number) && number >= 200 && number < 400;
+}
+
+function dedupeMatchedFields(fields = []) {
+  const bestByKey = new Map();
+
+  fields.forEach((field) => {
+    const key = `${field.path || ""}:${field.value || ""}:${field.match || ""}`;
+    const current = bestByKey.get(key);
+    if (!current || Number(field.confidence || 0) > Number(current.confidence || 0)) {
+      bestByKey.set(key, field);
+    }
+  });
+
+  return Array.from(bestByKey.values())
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
+    .slice(0, 80);
+}
+
+function dedupeStepBindings(bindings = []) {
+  const bestByKey = new Map();
+
+  bindings.forEach((binding) => {
+    const key = `${binding.domFactId || ""}:${binding.responsePath || ""}:${binding.responseValue || ""}`;
+    const current = bestByKey.get(key);
+    if (!current || Number(binding.confidence || 0) > Number(current.confidence || 0)) {
+      bestByKey.set(key, binding);
+    }
+  });
+
+  return Array.from(bestByKey.values())
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
+    .slice(0, 80);
+}
+
+function buildApiSignature(method, url) {
+  return `${String(method || "GET").toUpperCase()} ${normalizeApiUrlForSignature(url)}`;
+}
+
+function normalizeApiUrlForSignature(url) {
+  try {
+    const parsed = new URL(url || "", location.href);
+    const params = [];
+    parsed.searchParams.forEach((value, key) => {
+      params.push([key, isVolatileQueryParam(key, value) ? "<volatile>" : normalizeQueryParamValue(value)]);
+    });
+    params.sort(([keyA, valueA], [keyB, valueB]) => `${keyA}=${valueA}`.localeCompare(`${keyB}=${valueB}`));
+    const query = params.map(([key, value]) => `${key}=${value}`).join("&");
+    return `${parsed.origin}${parsed.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return String(url || "").replace(/[?&](?:rquid|requestId|traceId|timestamp|ts|_)=([^&]+)/gi, "$&=<volatile>");
+  }
+}
+
+function normalizeApiUrlForDisplay(url) {
+  try {
+    const parsed = new URL(url || "", location.href);
+    const params = [];
+    parsed.searchParams.forEach((value, key) => {
+      params.push([key, isVolatileQueryParam(key, value) ? "<volatile>" : truncateText(value, 80)]);
+    });
+    params.sort(([keyA], [keyB]) => keyA.localeCompare(keyB));
+    const query = params.map(([key, value]) => `${key}=${value}`).join("&");
+    return `${parsed.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return truncateText(String(url || ""), 240);
+  }
+}
+
+function normalizeQueryParamValue(value) {
+  const text = String(value || "");
+  if (isVolatileQueryValue(text)) {
+    return "<volatile>";
+  }
+  return text;
+}
+
+function isVolatileQueryParam(key, value) {
+  return /^(?:_|t|ts|time|timestamp|rquid|requestid|request_id|traceid|trace_id|correlationid|correlation_id|nonce|random|rnd|cb|cachebuster|_dc)$/i.test(String(key || "")) ||
+    isVolatileQueryValue(value);
+}
+
+function isVolatileQueryValue(value) {
+  const text = String(value || "").trim();
+  return (
+    /^\d{12,}$/.test(text) ||
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(text) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+  );
+}
+
+function buildEvidenceTimeline({ interaction, apiSequence, apiDependencies, bindings, renderEvidence, analysisDiagnostics }) {
+  const events = [];
+
+  if (interaction?.timestamp) {
+    events.push({
+      id: "timeline-interaction",
+      type: "interaction",
+      timestamp: interaction.timestamp,
+      label: "Выбран элемент",
+      detail: interaction.type || "click"
+    });
+  }
+
+  (apiSequence || []).forEach((step) => {
+    const matchedCount = step.response?.matchedFields?.length || step.bindings?.length || 0;
+    const duplicateText = step.duplicateCount > 1 ? ` · свернуто ${step.duplicateCount} вызова` : "";
+    events.push({
+      id: `timeline-api-${step.requestId || step.step}`,
+      type: matchedCount > 0 ? "api-match" : "api-call",
+      timestamp: step.firstTimestamp || step.timestamp || null,
+      requestId: step.requestId,
+      step: step.step,
+      label: `${step.method || "GET"} ${shortenUrl(step.normalizedUrl || step.url || "")}`,
+      detail: matchedCount > 0 ? `${matchedCount} полей связано с DOM${duplicateText}` : `ответ захвачен${duplicateText}`,
+      status: step.status || 0,
+      confidence: getMaxMatchedFieldConfidence(step.response?.matchedFields || [])
+    });
+  });
+
+  (bindings || []).slice(0, 24).forEach((binding) => {
+    const step = findTimelineStepForRequest(apiSequence, binding.requestId);
+    events.push({
+      id: `timeline-binding-${binding.id || binding.bindingId || binding.responsePath}`,
+      type: "data-match",
+      timestamp: step?.firstTimestamp || step?.timestamp || null,
+      requestId: binding.requestId,
+      bindingId: binding.id || binding.bindingId || "",
+      step: step?.step || binding.step || null,
+      label: `${binding.responsePath || binding.path || "JSON path"} → ${binding.domValue || binding.value || ""}`,
+      detail: `${binding.responseValue || ""}`,
+      confidence: binding.confidence || null,
+      reasons: binding.reasons || []
+    });
+  });
+
+  (apiDependencies || []).forEach((edge) => {
+    const targetStep = findTimelineStepForRequest(apiSequence, edge.toRequestId);
+    events.push({
+      id: `timeline-dependency-${edge.id || edge.fromRequestId}-${edge.toRequestId}`,
+      type: "api-dependency",
+      timestamp: targetStep?.firstTimestamp || targetStep?.timestamp || null,
+      requestId: edge.toRequestId,
+      step: targetStep?.step || edge.toStep || null,
+      label: `${edge.fromLabel || edge.fromRequestId || "API"} → ${edge.toLabel || edge.toRequestId || "API"}`,
+      detail: `${edge.source?.path || "response"} переиспользовано в ${formatRequestDependencyTarget(edge.target)}`,
+      confidence: edge.confidence || null,
+      value: truncateText(String(edge.value || ""), 160)
+    });
+  });
+
+  (renderEvidence || []).forEach((evidence) => {
+    const binding = (bindings || []).find((item) => item.id === evidence.bindingId) || {};
+    events.push({
+      id: `timeline-render-${evidence.mutationId || evidence.bindingId}`,
+      type: "dom-render",
+      timestamp: evidence.timestamp || null,
+      requestId: binding.requestId || "",
+      bindingId: evidence.bindingId || "",
+      label: `DOM обновил ${binding.domValue || evidence.textPreview || "значение"}`,
+      detail: evidence.delayMs != null ? `через ${evidence.delayMs} мс после API` : "DOM mutation trace",
+      selector: evidence.selector || "",
+      confidence: binding.confidence || null
+    });
+  });
+
+  (analysisDiagnostics || [])
+    .filter((item) => item.severity === "warning")
+    .slice(0, 6)
+    .forEach((item, index) => {
+      events.push({
+        id: `timeline-diagnostic-${index + 1}`,
+        type: "diagnostic",
+        timestamp: null,
+        label: item.title || "Диагностика",
+        detail: item.message || "",
+        value: item.value || ""
+      });
+    });
+
+  return dedupeTimelineEvents(events)
+    .sort(compareTimelineEvents)
+    .slice(0, MAX_EVIDENCE_TIMELINE_EVENTS);
+}
+
+function findTimelineStepForRequest(apiSequence = [], requestId) {
+  if (!requestId) {
+    return null;
+  }
+
+  return (apiSequence || []).find((step) => (
+    step.requestId === requestId ||
+    (step.duplicateRequestIds || []).includes(requestId)
+  )) || null;
+}
+
+function getMaxMatchedFieldConfidence(fields = []) {
+  const values = fields.map((field) => Number(field.confidence || 0)).filter(Number.isFinite);
+  return values.length ? Math.max(...values) : null;
+}
+
+function dedupeTimelineEvents(events = []) {
+  const seen = new Set();
+  return events.filter((event) => {
+    const key = [
+      event.type,
+      event.timestamp || "",
+      event.requestId || "",
+      event.bindingId || "",
+      event.label || "",
+      event.detail || ""
+    ].join("::");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function compareTimelineEvents(a, b) {
+  const timeA = Number(a.timestamp || 0);
+  const timeB = Number(b.timestamp || 0);
+  if (timeA > 0 && timeB > 0 && timeA !== timeB) {
+    return timeA - timeB;
+  }
+  if (timeA > 0 && timeB <= 0) {
+    return -1;
+  }
+  if (timeA <= 0 && timeB > 0) {
+    return 1;
+  }
+  return getTimelineTypeOrder(a.type) - getTimelineTypeOrder(b.type);
+}
+
+function getTimelineTypeOrder(type) {
+  const order = {
+    interaction: 0,
+    "api-call": 1,
+    "api-match": 2,
+    "data-match": 3,
+    "api-dependency": 4,
+    "dom-render": 5,
+    diagnostic: 6
+  };
+  return order[type] ?? 10;
+}
+
+function buildAnalysisDiagnostics(domFacts, responseFacts, bindings, requests, mutationTrace) {
+  const diagnostics = [];
+  const add = (item) => diagnostics.push({
+    severity: item.severity || "info",
+    code: item.code || "analysis-note",
+    title: item.title || "Диагностика анализа",
+    message: item.message || "",
+    hints: item.hints || [],
+    value: item.value || "",
+    kind: item.kind || "",
+    selector: item.selector || "",
+    candidates: item.candidates || []
+  });
+
+  if (!requests.length) {
+    add({
+      severity: "warning",
+      code: "no-selected-api",
+      title: "API не выбран",
+      message: "Для рецепта не выбран ни один захваченный API-запрос.",
+      hints: ["Включить сбор для домена до перезагрузки страницы.", "Оставить отмеченными API-кандидаты, которые могли отрисовать виджет."]
+    });
+  } else if (!responseFacts.length) {
+    add({
+      severity: "warning",
+      code: "no-response-facts",
+      title: "В выбранных API нет JSON-полей",
+      message: "Ответы выбранных API не разобрались в набор JSON/text facts.",
+      hints: ["Ответ мог быть не JSON.", "Значение могло прийти до вооружения домена.", "Ответ мог быть слишком большим или бинарным."]
+    });
+  }
+
+  const boundDomFactIds = new Set((bindings || []).map((binding) => binding.domFactId).filter(Boolean));
+  const boundValues = new Set((bindings || []).map((binding) => `${binding.kind || ""}:${normalizeFactValue(binding.domValue || "", binding.kind || classifyFact(binding.domValue))}`));
+
+  selectDiagnosticDomFacts(domFacts)
+    .filter((fact) => !boundDomFactIds.has(fact.id) && !boundValues.has(`${fact.kind}:${fact.normalizedValue}`))
+    .slice(0, 10)
+    .forEach((fact) => {
+      const comparable = findComparableResponseFactsForDiagnostic(fact, responseFacts);
+      if (comparable.length > 0) {
+        add({
+          severity: "warning",
+          code: "value-found-without-context",
+          title: "Значение найдено, но связь слабая",
+          message: "Похожее значение есть в выбранных API, но не хватило контекста рядом с DOM и JSON-объектом, чтобы считать его источником виджета.",
+          value: fact.value,
+          kind: fact.kind,
+          selector: fact.selector,
+          candidates: comparable,
+          hints: ["Проверьте соседние поля объекта ответа.", "Для маленьких чисел нужен label или semantic-context рядом."]
+        });
+        return;
+      }
+
+      add({
+        severity: "warning",
+        code: "value-not-found-in-selected-api",
+        title: "Значение не найдено в выбранных API",
+        message: "В выбранных ответах API нет значения, которое объясняет этот текст/число из DOM.",
+        value: fact.value,
+        kind: fact.kind,
+        selector: fact.selector,
+        hints: ["API мог быть вызван до включения capture.", "Нужный API мог быть снят с чекбокса.", "Значение могло быть вычислено фронтендом из другого поля."]
+      });
+    });
+
+  if (bindings.length === 0 && responseFacts.length > 0 && requests.length > 0) {
+    add({
+      severity: "warning",
+      code: "no-bindings",
+      title: "Связи DOM↔API не построены",
+      message: "Ответы API разобраны, но ни одно значение не набрало достаточную уверенность для связи с выбранным элементом.",
+      hints: ["Откройте Debug и проверьте, нет ли нужного значения в невыбранном API.", "Для одиночных чисел нужен label, соседнее поле или DOM mutation evidence."]
+    });
+  }
+
+  if (requests.some((request) => request.bodyTooLarge || String(request.responseBody || "").includes("...[truncated]"))) {
+    add({
+      severity: "info",
+      code: "response-truncated",
+      title: "Часть ответа была урезана",
+      message: "Некоторые ответы дошли до локального лимита размера. Анализ использовал доступную часть ответа.",
+      hints: ["Если нужное поле находится глубоко в большом JSON, оно могло не попасть в локальный фрагмент."]
+    });
+  }
+
+  if (!mutationTrace.length && bindings.some((binding) => (binding.evidence || []).length === 0)) {
+    add({
+      severity: "info",
+      code: "no-render-mutation-evidence",
+      title: "Нет DOM mutation evidence",
+      message: "Связи построены по значениям и контексту, но trace не увидел обновление DOM после ответа API.",
+      hints: ["Это нормально для уже отрисованных элементов.", "Для ранних запросов включите capture до перезагрузки страницы."]
+    });
+  }
+
+  return dedupeAnalysisDiagnostics(diagnostics).slice(0, MAX_ANALYSIS_DIAGNOSTICS);
+}
+
+function selectDiagnosticDomFacts(domFacts = []) {
+  const seen = new Set();
+  const selected = [];
+
+  [...domFacts]
+    .filter(isDiagnosticDomFact)
+    .sort((a, b) => getDiagnosticFactPriority(b) - getDiagnosticFactPriority(a))
+    .forEach((fact) => {
+      const key = `${fact.kind}:${fact.normalizedValue}:${normalizeText(fact.value)}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      selected.push(fact);
+    });
+
+  return selected;
+}
+
+function isDiagnosticDomFact(fact) {
+  if (!fact?.normalizedValue || isLowSignalFact(fact.normalizedValue, fact.kind)) {
+    return false;
+  }
+
+  if (["duration", "currency", "percent"].includes(fact.kind)) {
+    return true;
+  }
+
+  if (fact.kind === "number") {
+    const number = Number(fact.normalizedValue);
+    return Number.isFinite(number) && Math.abs(number) >= 10;
+  }
+
+  const text = normalizeText(fact.value || "");
+  return text.length >= 4 && text.length <= 80 && !/^(?:оформить|подробнее|назад|далее|ok|да|нет)$/i.test(text);
+}
+
+function getDiagnosticFactPriority(fact) {
+  if (fact.kind === "duration") {
+    return 5;
+  }
+  if (["currency", "percent"].includes(fact.kind)) {
+    return 4;
+  }
+  if (fact.kind === "number") {
+    return 3;
+  }
+  return 1;
+}
+
+function findComparableResponseFactsForDiagnostic(domFact, responseFacts = []) {
+  return responseFacts
+    .map((responseFact) => ({
+      responseFact,
+      match: scoreFactMatch(domFact, responseFact)
+    }))
+    .filter((item) => item.match)
+    .sort((a, b) => Number(b.match.score || 0) - Number(a.match.score || 0))
+    .slice(0, 4)
+    .map(({ responseFact, match }) => ({
+      requestId: responseFact.requestId,
+      step: responseFact.step,
+      method: responseFact.method,
+      url: responseFact.url,
+      path: responseFact.path,
+      key: responseFact.key,
+      value: responseFact.value,
+      match: match.type,
+      reasons: match.reasons
+    }));
+}
+
+function dedupeAnalysisDiagnostics(items = []) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.code}:${item.value}:${item.selector}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function buildSequenceSummary(apiDependencies) {
@@ -1404,9 +2146,11 @@ function buildApiDependencies(requests, responseFacts) {
             id: "",
             fromRequestId: sourceRequestId,
             fromStep: sourceIndex + 1,
+            fromSignature: buildApiSignature(sourceRequest.method || "GET", sourceRequest.url || ""),
             fromLabel: `${sourceRequest.method || "GET"} ${shortenUrl(sourceRequest.url || "")}`,
             toRequestId: targetRequestId,
             toStep: targetIndex + 1,
+            toSignature: buildApiSignature(targetRequest.method || "GET", targetRequest.url || ""),
             toLabel: `${targetRequest.method || "GET"} ${shortenUrl(targetRequest.url || "")}`,
             source: {
               requestId: sourceRequestId,
@@ -1781,8 +2525,8 @@ function dedupeApiDependencies(edges) {
 
   edges.forEach((edge) => {
     const key = [
-      edge.fromRequestId,
-      edge.toRequestId,
+      edge.fromSignature || edge.fromRequestId,
+      edge.toSignature || edge.toRequestId,
       edge.source?.path,
       edge.target?.location,
       edge.target?.path,

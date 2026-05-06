@@ -3,14 +3,16 @@ const jsonEl = document.getElementById("json");
 const rawJsonPanelEl = document.querySelector(".debug-panel");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
+const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
     return;
   }
 
-  renderCapture(changes[LATEST_CAPTURE_STORAGE_KEY].newValue);
-  void chrome.storage.local.remove(LATEST_CAPTURE_STORAGE_KEY);
+  void renderStoredCapture(changes[LATEST_CAPTURE_STORAGE_KEY].newValue, {
+    removeLatest: true
+  });
 });
 
 init();
@@ -18,14 +20,39 @@ init();
 async function init() {
   const stored = await chrome.storage.local.get([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
   if (stored[LATEST_CAPTURE_STORAGE_KEY]) {
-    renderCapture(stored[LATEST_CAPTURE_STORAGE_KEY]);
-    await chrome.storage.local.remove(LATEST_CAPTURE_STORAGE_KEY);
+    await renderStoredCapture(stored[LATEST_CAPTURE_STORAGE_KEY], {
+      fallbackCapture: stored[COPYABLE_CAPTURE_STORAGE_KEY],
+      removeLatest: true
+    });
     return;
   }
 
   if (stored[COPYABLE_CAPTURE_STORAGE_KEY]) {
     renderCapture(stored[COPYABLE_CAPTURE_STORAGE_KEY]);
   }
+}
+
+async function renderStoredCapture(storedCapture, options = {}) {
+  const capture = await resolveStoredCapture(storedCapture, options.fallbackCapture);
+  if (capture) {
+    renderCapture(capture);
+  }
+  if (options.removeLatest) {
+    await chrome.storage.local.remove(LATEST_CAPTURE_STORAGE_KEY);
+  }
+}
+
+async function resolveStoredCapture(value, fallbackCapture = null) {
+  if (value?.[CAPTURE_REF_MARK]) {
+    if (fallbackCapture) {
+      return fallbackCapture;
+    }
+    const key = value.storageKey || COPYABLE_CAPTURE_STORAGE_KEY;
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] || null;
+  }
+
+  return value || null;
 }
 
 function renderCapture(capture) {
@@ -100,6 +127,7 @@ function renderMeta(capture, recipe) {
   const bindings = getExportBindings(recipe);
   const steps = recipe.apiSequence || [];
   const dependencies = getApiDependencies(recipe);
+  const collapsedApiCount = getCollapsedApiCount(recipe);
   section.innerHTML = `
     <div class="pill">Получено ${escapeHtml(capture.createdAt || "")}</div>
     <div class="meta-grid">
@@ -121,7 +149,7 @@ function renderMeta(capture, recipe) {
       </article>
       <article class="metric">
         <span class="metric__label">API</span>
-        <div class="metric__value">${steps.length}</div>
+        <div class="metric__value">${steps.length}${collapsedApiCount > 0 ? ` · ${collapsedApiCount} дублей` : ""}</div>
       </article>
       <article class="metric">
         <span class="metric__label">Поля</span>
@@ -171,6 +199,7 @@ function renderMinimalRecipeTable(recipe) {
     header.innerHTML = `
       <span>#${escapeHtml(String(group.order || ""))}</span>
       <strong>${escapeHtml(group.method)} ${escapeHtml(group.url || "—")}</strong>
+      ${group.duplicateCount > 1 ? `<small>свернуто ${escapeHtml(String(group.duplicateCount))} одинаковых вызова</small>` : ""}
     `;
 
     const rows = document.createElement("div");
@@ -218,11 +247,15 @@ function buildMinimalRecipeGroups(recipe, options = {}) {
   }).slice(0, 40).forEach((binding, index) => {
     const method = binding.method || "GET";
     const url = binding.url || "";
-    const key = `${method} ${url}`;
+    const apiStep = findApiStepForRequest(recipe, binding.requestId);
+    const key = apiStep?.apiSignature || `${method} ${normalizeViewerApiUrlForSignature(url)}`;
     const group = groups.get(key) || {
-      method,
-      url,
-      order: binding.step || null,
+      method: apiStep?.method || method,
+      url: apiStep?.url || url,
+      normalizedUrl: apiStep?.normalizedUrl || normalizeViewerApiUrlForDisplay(url),
+      order: apiStep?.step || binding.step || null,
+      duplicateCount: apiStep?.duplicateCount || 1,
+      requestIds: apiStep?.duplicateRequestIds || [binding.requestId].filter(Boolean),
       fields: []
     };
     const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
@@ -447,8 +480,9 @@ function buildElementOnlyApiExport(recipe, bindings) {
 
   return groups.map((group) => {
     const requestId = group.fields[0]?.requestId || findRequestIdForApiGroup(recipe, group) || "";
+    const groupRequestIds = new Set([requestId, ...(group.requestIds || [])].filter(Boolean));
     const relatedDependencies = dependencies
-      .filter((edge) => edge.toRequestId === requestId || edge.fromRequestId === requestId)
+      .filter((edge) => groupRequestIds.has(edge.toRequestId) || groupRequestIds.has(edge.fromRequestId))
       .map((edge) => ({
         fromRequestId: edge.fromRequestId || "",
         toRequestId: edge.toRequestId || "",
@@ -482,6 +516,10 @@ function buildElementOnlyApiExport(recipe, bindings) {
 }
 
 function findRequestIdForApiGroup(recipe, group) {
+  if (group.requestIds?.length) {
+    return group.requestIds[0] || "";
+  }
+
   const step = (recipe.apiSequence || []).find((item) => (
     item.step === group.order &&
     item.method === group.method &&
@@ -1227,8 +1265,12 @@ function renderApiTab(recipe) {
     empty.className = "empty";
     empty.textContent = "Для элемента сохранён только DOM-контекст.";
     section.appendChild(empty);
+    section.appendChild(renderAnalysisDiagnostics(recipe));
     return section;
   }
+
+  section.appendChild(renderEvidenceTimeline(recipe));
+  section.appendChild(renderAnalysisDiagnostics(recipe));
 
   if (apiDependencies.length > 0) {
     section.appendChild(renderSequenceDiagram(apiDependencies));
@@ -1431,6 +1473,108 @@ function getBindingAlternatives(recipe, binding) {
     .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
 }
 
+function renderEvidenceTimeline(recipe) {
+  const timeline = recipe.evidenceTimeline || [];
+  if (timeline.length === 0) {
+    return document.createDocumentFragment();
+  }
+
+  const surface = document.createElement("div");
+  surface.className = "surface evidence-timeline";
+  surface.innerHTML = `
+    <div class="surface-heading">
+      <strong>Evidence timeline</strong>
+      <span>${escapeHtml(String(timeline.length))} событий</span>
+    </div>
+  `;
+
+  const list = document.createElement("div");
+  list.className = "evidence-timeline__list";
+  timeline.slice(0, 40).forEach((event) => {
+    const item = document.createElement("div");
+    item.className = `evidence-event evidence-event--${escapeHtml(event.type || "note")}`;
+    item.innerHTML = `
+      <span class="evidence-event__type">${escapeHtml(formatTimelineType(event.type))}</span>
+      <div>
+        <strong>${escapeHtml(event.label || "Событие")}</strong>
+        <small>${escapeHtml(formatTimelineMeta(event))}</small>
+        ${event.detail ? `<p>${escapeHtml(event.detail)}</p>` : ""}
+      </div>
+      <span class="evidence-event__score">${escapeHtml(event.confidence ? formatConfidenceScore(event.confidence) : "")}</span>
+    `;
+    list.appendChild(item);
+  });
+
+  surface.appendChild(list);
+  return surface;
+}
+
+function renderAnalysisDiagnostics(recipe) {
+  const diagnostics = recipe.analysisDiagnostics || [];
+  if (diagnostics.length === 0) {
+    return document.createDocumentFragment();
+  }
+
+  const surface = document.createElement("div");
+  surface.className = "surface analysis-diagnostics";
+  surface.innerHTML = `
+    <div class="surface-heading">
+      <strong>Диагностика “почему не нашли”</strong>
+      <span>${escapeHtml(String(diagnostics.length))}</span>
+    </div>
+  `;
+
+  const list = document.createElement("div");
+  list.className = "analysis-diagnostics__list";
+  diagnostics.slice(0, 12).forEach((item) => {
+    const row = document.createElement("details");
+    row.className = `diagnostic diagnostic--${escapeHtml(item.severity || "info")}`;
+    row.innerHTML = `
+      <summary>
+        <span>${escapeHtml(formatDiagnosticSeverity(item.severity))}</span>
+        <strong>${escapeHtml(item.title || "Диагностика")}</strong>
+        ${item.value ? `<code>${escapeHtml(item.value)}</code>` : ""}
+      </summary>
+      <p>${escapeHtml(item.message || "")}</p>
+      ${renderDiagnosticCandidates(item.candidates || [])}
+      ${renderDiagnosticHints(item.hints || [])}
+    `;
+    list.appendChild(row);
+  });
+
+  surface.appendChild(list);
+  return surface;
+}
+
+function renderDiagnosticCandidates(candidates) {
+  if (!candidates.length) {
+    return "";
+  }
+
+  return `
+    <div class="diagnostic-candidates">
+      ${candidates.slice(0, 4).map((candidate) => `
+        <div>
+          <strong>${escapeHtml(candidate.method || "GET")} ${escapeHtml(candidate.url || "")}</strong>
+          <small>${escapeHtml(candidate.path || "")} = ${escapeHtml(candidate.value || "")}</small>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderDiagnosticHints(hints) {
+  if (!hints.length) {
+    return "";
+  }
+
+  return `
+    <ul class="diagnostic-hints">
+      ${hints.slice(0, 4).map((hint) => `<li>${escapeHtml(hint)}</li>`).join("")}
+    </ul>
+  `;
+}
+
 function renderSequenceDiagram(sequence) {
   const surface = document.createElement("div");
   surface.className = "surface sequence-diagram";
@@ -1538,17 +1682,27 @@ function renderApiStep(step) {
   const matchedFields = step.response?.matchedFields || [];
   const requestBody = step.request?.body || "";
   const initiatorStack = step.request?.initiatorStack || "";
+  const duplicateMeta = step.duplicateCount > 1
+    ? ` · свернуто ${step.duplicateCount} одинаковых вызова: #${(step.duplicateSteps || []).join(", #")}`
+    : "";
 
   card.innerHTML = `
     <div class="request__header">
       <div>
         <div class="request__title">${escapeHtml(step.step || "")}. ${escapeHtml(step.method || "GET")} ${escapeHtml(step.url || "")}</div>
-        <div class="request__meta">${escapeHtml(formatStepTiming(step))}</div>
+        <div class="request__meta">${escapeHtml(formatStepTiming(step))}${escapeHtml(duplicateMeta)}</div>
       </div>
       <div class="request__meta">Status ${escapeHtml(String(step.status || ""))}</div>
     </div>
     <div class="request__meta">${escapeHtml(step.contentType || "unknown content type")}</div>
   `;
+
+  if (step.normalizedUrl && step.normalizedUrl !== step.url) {
+    const normalized = document.createElement("div");
+    normalized.className = "request__normalized";
+    normalized.textContent = `Endpoint: ${step.normalizedUrl}`;
+    card.appendChild(normalized);
+  }
 
   if (requestBody) {
     card.appendChild(renderCodeBlock("Request body", requestBody, {
@@ -1787,6 +1941,107 @@ function formatConfidenceScore(value) {
   return formatConfidence(value);
 }
 
+function getCollapsedApiCount(recipe) {
+  return (recipe.apiSequence || []).reduce((sum, step) => sum + Math.max(0, Number(step.duplicateCount || 1) - 1), 0);
+}
+
+function findApiStepForRequest(recipe, requestId) {
+  if (!requestId) {
+    return null;
+  }
+
+  return (recipe.apiSequence || []).find((step) => (
+    step.requestId === requestId ||
+    (step.duplicateRequestIds || []).includes(requestId)
+  )) || null;
+}
+
+function normalizeViewerApiUrlForSignature(url) {
+  try {
+    const parsed = new URL(url || "", window.location.href);
+    const params = [];
+    parsed.searchParams.forEach((value, key) => {
+      params.push([key, isVolatileViewerQueryParam(key, value) ? "<volatile>" : value]);
+    });
+    params.sort(([keyA, valueA], [keyB, valueB]) => `${keyA}=${valueA}`.localeCompare(`${keyB}=${valueB}`));
+    const query = params.map(([key, value]) => `${key}=${value}`).join("&");
+    return `${parsed.origin}${parsed.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return String(url || "");
+  }
+}
+
+function normalizeViewerApiUrlForDisplay(url) {
+  try {
+    const parsed = new URL(url || "", window.location.href);
+    const params = [];
+    parsed.searchParams.forEach((value, key) => {
+      params.push([key, isVolatileViewerQueryParam(key, value) ? "<volatile>" : value]);
+    });
+    params.sort(([keyA], [keyB]) => keyA.localeCompare(keyB));
+    const query = params.map(([key, value]) => `${key}=${value}`).join("&");
+    return `${parsed.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return String(url || "");
+  }
+}
+
+function isVolatileViewerQueryParam(key, value) {
+  return /^(?:_|t|ts|time|timestamp|rquid|requestid|request_id|traceid|trace_id|correlationid|correlation_id|nonce|random|rnd|cb|cachebuster|_dc)$/i.test(String(key || "")) ||
+    isVolatileViewerQueryValue(value);
+}
+
+function isVolatileViewerQueryValue(value) {
+  const text = String(value || "").trim();
+  return (
+    /^\d{12,}$/.test(text) ||
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(text) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+  );
+}
+
+function formatTimelineType(type) {
+  const labels = {
+    interaction: "DOM",
+    "api-call": "API",
+    "api-match": "API+DOM",
+    "data-match": "Данные",
+    "api-dependency": "Зависимость",
+    "dom-render": "Render",
+    diagnostic: "Диагностика"
+  };
+  return labels[type] || "Событие";
+}
+
+function formatTimelineMeta(event) {
+  const parts = [];
+  if (event.step) {
+    parts.push(`#${event.step}`);
+  }
+  if (event.timestamp) {
+    parts.push(formatTimestamp(event.timestamp));
+  }
+  if (event.status) {
+    parts.push(`Status ${event.status}`);
+  }
+  if (event.value) {
+    parts.push(`value: ${event.value}`);
+  }
+  if (event.reasons?.length) {
+    parts.push(event.reasons.map(formatReason).join(", "));
+  }
+  return parts.join(" · ") || "без времени";
+}
+
+function formatDiagnosticSeverity(severity) {
+  const labels = {
+    warning: "Проверить",
+    info: "Инфо",
+    error: "Ошибка"
+  };
+  return labels[severity] || "Инфо";
+}
+
 function shortEndpoint(binding) {
   const endpoint = `${binding.method || ""} ${binding.url || ""}`.trim();
   if (!endpoint) {
@@ -1896,7 +2151,8 @@ function formatReason(reason) {
     "request-key-context": "совпал контекст ключа запроса",
     "semantic-request-context": "семантика запроса совпала",
     "derived-visible-primary-value": "восстановлено из видимого значения",
-    "same-response-object": "тот же объект ответа"
+    "same-response-object": "тот же объект ответа",
+    "raw-response-scan": "найдено в сыром ответе"
   };
 
   return labels[reason] || reason;

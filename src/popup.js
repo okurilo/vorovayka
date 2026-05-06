@@ -10,6 +10,7 @@ const viewerButton = document.getElementById("viewerButton");
 const clearButton = document.getElementById("clearButton");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
+const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
 
 let popupState = null;
 
@@ -46,7 +47,7 @@ startButton.addEventListener("click", async () => {
 
 copyButton.addEventListener("click", async () => {
   const stored = await chrome.storage.local.get([COPYABLE_CAPTURE_STORAGE_KEY, LATEST_CAPTURE_STORAGE_KEY]);
-  const capture = stored[COPYABLE_CAPTURE_STORAGE_KEY] || stored[LATEST_CAPTURE_STORAGE_KEY];
+  const capture = resolveStoredCapture(stored[COPYABLE_CAPTURE_STORAGE_KEY] || stored[LATEST_CAPTURE_STORAGE_KEY], stored);
   if (!capture) {
     setMessage("Нет сохранённого захвата. Сначала выберите элемент и сохраните capture.");
     await refreshState();
@@ -62,6 +63,13 @@ copyButton.addEventListener("click", async () => {
     setMessage("Не удалось скопировать.");
   }
 });
+
+function resolveStoredCapture(value, stored) {
+  if (value?.[CAPTURE_REF_MARK]) {
+    return stored[value.storageKey || COPYABLE_CAPTURE_STORAGE_KEY] || null;
+  }
+  return value || null;
+}
 
 viewerButton.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "OPEN_RECEIVER" });
