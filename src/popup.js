@@ -8,6 +8,8 @@ const startButton = document.getElementById("startButton");
 const copyButton = document.getElementById("copyButton");
 const viewerButton = document.getElementById("viewerButton");
 const clearButton = document.getElementById("clearButton");
+const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
+const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 
 let popupState = null;
 
@@ -43,16 +45,19 @@ startButton.addEventListener("click", async () => {
 });
 
 copyButton.addEventListener("click", async () => {
-  const stored = await chrome.storage.local.get("latestCapture");
-  if (!stored.latestCapture) {
-    setMessage("Сохранять пока нечего.");
+  const stored = await chrome.storage.local.get([COPYABLE_CAPTURE_STORAGE_KEY, LATEST_CAPTURE_STORAGE_KEY]);
+  const capture = stored[COPYABLE_CAPTURE_STORAGE_KEY] || stored[LATEST_CAPTURE_STORAGE_KEY];
+  if (!capture) {
+    setMessage("Нет сохранённого захвата. Сначала выберите элемент и сохраните capture.");
     await refreshState();
     return;
   }
 
   try {
-    await navigator.clipboard.writeText(JSON.stringify(stored.latestCapture, null, 2));
-    setMessage("Захват скопирован.");
+    await navigator.clipboard.writeText(JSON.stringify(capture, null, 2));
+    setMessage(stored[LATEST_CAPTURE_STORAGE_KEY]
+      ? "Захват скопирован. Viewer тоже сможет его открыть."
+      : "Последний захват скопирован из локальной копии.");
   } catch {
     setMessage("Не удалось скопировать.");
   }
@@ -82,6 +87,8 @@ function renderState() {
   const isSupported = Boolean(popupState?.isSupportedPage);
   const isArmed = Boolean(popupState?.isArmed);
   const hasLatestCapture = Boolean(popupState?.hasLatestCapture);
+  const hasCopyableCapture = Boolean(popupState?.hasCopyableCapture);
+  const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
 
   const originText = popupState?.origin ? simplifyOrigin(popupState.origin) : "Неподдерживаемая вкладка";
 
@@ -92,8 +99,17 @@ function renderState() {
   armedToggle.checked = isArmed;
   armedToggle.disabled = !isSupported;
   startButton.disabled = !isSupported || !isArmed;
-  copyButton.disabled = !hasLatestCapture;
-  clearButton.disabled = !hasLatestCapture;
+  copyButton.disabled = !hasAnyCapture;
+  copyButton.textContent = hasLatestCapture || !hasAnyCapture ? "Скопировать захват" : "Скопировать последний";
+  clearButton.disabled = !hasAnyCapture;
+
+  if (!messageEl.textContent) {
+    if (hasLatestCapture) {
+      setMessage("Новый захват готов: можно открыть viewer или скопировать JSON.");
+    } else if (hasCopyableCapture) {
+      setMessage("Viewer уже забрал одноразовый capture; локальная копия ещё доступна для повторного копирования.");
+    }
+  }
 
   if (!isSupported) {
     statusEl.textContent = "Откройте обычную страницу по http или https.";
@@ -108,11 +124,12 @@ function renderState() {
 }
 
 function setBusy(isBusy) {
+  const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
   armedToggle.disabled = isBusy || !popupState?.isSupportedPage;
   startButton.disabled = isBusy || !popupState?.isSupportedPage || !popupState?.isArmed;
-  copyButton.disabled = isBusy || !popupState?.hasLatestCapture;
+  copyButton.disabled = isBusy || !hasAnyCapture;
   viewerButton.disabled = isBusy;
-  clearButton.disabled = isBusy || !popupState?.hasLatestCapture;
+  clearButton.disabled = isBusy || !hasAnyCapture;
 }
 
 function setMessage(text) {

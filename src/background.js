@@ -1,6 +1,7 @@
 const RECEIVER_PATH = "src/viewer.html";
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const CAPTURE_STORAGE_KEY = "latestCapture";
+const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_EXPIRY_ALARM = "latestCaptureExpiry";
 const CAPTURE_TTL_MS = 5 * 60 * 1000;
 
@@ -56,7 +57,7 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === CAPTURE_EXPIRY_ALARM) {
-    await chrome.storage.local.remove(CAPTURE_STORAGE_KEY);
+    await clearEphemeralCapture();
   }
 });
 
@@ -155,7 +156,8 @@ async function syncActionState(tabId, url) {
 }
 
 async function clearEphemeralCapture() {
-  await chrome.storage.local.remove(CAPTURE_STORAGE_KEY);
+  await chrome.storage.local.remove([CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
+  await chrome.alarms.clear(CAPTURE_EXPIRY_ALARM);
 }
 
 function isPlainObject(value) {
@@ -167,7 +169,7 @@ async function getPopupState() {
   const url = tab?.url || "";
   const origin = getOrigin(url);
   const armedOrigins = origin ? await getArmedOrigins() : {};
-  const capture = await chrome.storage.local.get(CAPTURE_STORAGE_KEY);
+  const capture = await chrome.storage.local.get([CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
 
   return {
     tabId: tab?.id ?? null,
@@ -175,7 +177,9 @@ async function getPopupState() {
     origin,
     isSupportedPage: Boolean(origin),
     isArmed: Boolean(origin && armedOrigins[origin]),
-    hasLatestCapture: Boolean(capture[CAPTURE_STORAGE_KEY])
+    hasLatestCapture: Boolean(capture[CAPTURE_STORAGE_KEY]),
+    hasCopyableCapture: Boolean(capture[COPYABLE_CAPTURE_STORAGE_KEY]),
+    hasAnyCapture: Boolean(capture[CAPTURE_STORAGE_KEY] || capture[COPYABLE_CAPTURE_STORAGE_KEY])
   };
 }
 

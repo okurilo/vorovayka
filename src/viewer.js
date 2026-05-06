@@ -1,22 +1,30 @@
 const stateEl = document.getElementById("state");
 const jsonEl = document.getElementById("json");
+const rawJsonPanelEl = document.querySelector(".debug-panel");
+const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
+const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.latestCapture?.newValue) {
+  if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
     return;
   }
 
-  renderCapture(changes.latestCapture.newValue);
-  void chrome.storage.local.remove("latestCapture");
+  renderCapture(changes[LATEST_CAPTURE_STORAGE_KEY].newValue);
+  void chrome.storage.local.remove(LATEST_CAPTURE_STORAGE_KEY);
 });
 
 init();
 
 async function init() {
-  const stored = await chrome.storage.local.get("latestCapture");
-  if (stored.latestCapture) {
-    renderCapture(stored.latestCapture);
-    await chrome.storage.local.remove("latestCapture");
+  const stored = await chrome.storage.local.get([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
+  if (stored[LATEST_CAPTURE_STORAGE_KEY]) {
+    renderCapture(stored[LATEST_CAPTURE_STORAGE_KEY]);
+    await chrome.storage.local.remove(LATEST_CAPTURE_STORAGE_KEY);
+    return;
+  }
+
+  if (stored[COPYABLE_CAPTURE_STORAGE_KEY]) {
+    renderCapture(stored[COPYABLE_CAPTURE_STORAGE_KEY]);
   }
 }
 
@@ -26,12 +34,17 @@ function renderCapture(capture) {
   const wrapper = document.createElement("div");
   wrapper.className = "grid";
 
+  const recipe = getElementRecipe(capture);
   wrapper.appendChild(renderMeta(capture));
-  wrapper.appendChild(renderRecipe(getElementRecipe(capture)));
+  wrapper.appendChild(renderRecipe(recipe));
+  wrapper.appendChild(renderExportPanel(capture, recipe));
   wrapper.appendChild(renderDom(capture.dom));
   wrapper.appendChild(renderRequests(capture.network || []));
 
   stateEl.appendChild(wrapper);
+  if (rawJsonPanelEl) {
+    rawJsonPanelEl.open = false;
+  }
   jsonEl.textContent = JSON.stringify(capture, null, 2);
 }
 
@@ -56,6 +69,537 @@ function renderMeta(capture) {
     </div>
   `;
   return section;
+}
+
+function renderExportPanel(capture, recipe) {
+  const section = document.createElement("section");
+  section.className = "grid export-panel";
+
+  const bindings = getExportBindings(recipe).slice(0, 40);
+  section.innerHTML = `
+    <h2 class="section-title">Выгрузка JSON</h2>
+    <p class="section-copy">Минимальный payload: порядок API-вызовов, URL API и JSON-path данных, которые нужны для отображения.</p>
+  `;
+
+  const minimalNote = document.createElement("div");
+  minimalNote.className = "export-note";
+  minimalNote.textContent = "По умолчанию выгружается только API-рецепт. Структура ответа, request body/headers, DOM и debug добавляются вручную.";
+
+  const options = document.createElement("div");
+  options.className = "export-options";
+  [
+    ["apiRecipe", "Минимум: API URL + JSON-path", true],
+    ["widget", "Опционально: виджет и превью", false],
+    ["requestDetails", "Опционально: request body/headers", false],
+    ["responseShape", "Опционально: структура ответа", false],
+    ["dataModel", "Модель данных", false],
+    ["apiCalls", "Debug: API-вызовы", false],
+    ["apiDependencies", "Debug: зависимости API", false],
+    ["domContext", "Debug: DOM-контекст", false],
+    ["alternatives", "Альтернативные источники", false],
+    ["rawResponses", "Debug: сырые ответы", false],
+    ["rawCapture", "Debug: полный capture", false]
+  ].forEach(([id, label, checked]) => {
+    const item = document.createElement("label");
+    item.className = "export-check";
+    item.innerHTML = `
+      <input type="checkbox" data-export-option="${escapeHtml(id)}" ${checked ? "checked" : ""} />
+      <span>${escapeHtml(label)}</span>
+    `;
+    options.appendChild(item);
+  });
+
+  const fields = document.createElement("div");
+  fields.className = "export-fields";
+  fields.innerHTML = "<strong>Поля объекта</strong>";
+
+  if (bindings.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Для экспорта пока нет найденных DOM ↔ API полей.";
+    fields.appendChild(empty);
+  } else {
+    bindings.forEach((binding, index) => {
+      const fieldId = getBindingExportId(binding, index);
+      const item = document.createElement("label");
+      item.className = "export-field";
+      item.innerHTML = `
+        <input type="checkbox" class="export-field__input" value="${escapeHtml(fieldId)}" checked />
+        <span>
+          <strong>${escapeHtml(deriveExportFieldName(binding, index))}</strong>
+          <small>${escapeHtml(inferExportFieldType(binding))} · ${escapeHtml(binding.responsePath || binding.path || "")}</small>
+        </span>
+      `;
+      fields.appendChild(item);
+    });
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "export-actions";
+
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Скопировать JSON";
+
+  const downloadButton = document.createElement("button");
+  downloadButton.type = "button";
+  downloadButton.textContent = "Скачать .json";
+
+  const status = document.createElement("span");
+  status.className = "export-status";
+
+  const preview = renderCodeBlock("Предпросмотр export JSON", "", {
+    collapsed: true,
+    summary: "Подробнее: JSON выгрузки",
+    debug: true
+  });
+  const previewPre = preview.querySelector("pre");
+
+  const refreshPreview = () => {
+    const payload = buildExportPayload(capture, recipe, collectExportOptions(section));
+    previewPre.textContent = JSON.stringify(payload, null, 2);
+  };
+
+  section.addEventListener("change", refreshPreview);
+  copyButton.addEventListener("click", async () => {
+    const text = JSON.stringify(buildExportPayload(capture, recipe, collectExportOptions(section)), null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      status.textContent = "JSON скопирован.";
+    } catch {
+      status.textContent = "Не удалось скопировать JSON.";
+    }
+  });
+  downloadButton.addEventListener("click", () => {
+    const text = JSON.stringify(buildExportPayload(capture, recipe, collectExportOptions(section)), null, 2);
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vorovayka-export-${Date.now()}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = "Файл подготовлен.";
+  });
+
+  actions.append(copyButton, downloadButton, status);
+  section.append(minimalNote, options, fields, actions, preview);
+  refreshPreview();
+  return section;
+}
+
+function collectExportOptions(root) {
+  const isChecked = (id) => Boolean(root.querySelector(`[data-export-option="${id}"]`)?.checked);
+  return {
+    apiRecipe: isChecked("apiRecipe"),
+    widget: isChecked("widget"),
+    requestDetails: isChecked("requestDetails"),
+    responseShape: isChecked("responseShape"),
+    dataModel: isChecked("dataModel"),
+    apiCalls: isChecked("apiCalls"),
+    apiDependencies: isChecked("apiDependencies"),
+    domContext: isChecked("domContext"),
+    alternatives: isChecked("alternatives"),
+    rawResponses: isChecked("rawResponses"),
+    rawCapture: isChecked("rawCapture"),
+    selectedFieldIds: new Set(
+      Array.from(root.querySelectorAll(".export-field__input:checked"))
+        .map((input) => input.value)
+    )
+  };
+}
+
+function buildExportPayload(capture, recipe, options) {
+  const selectedBindings = getSelectedExportBindings(recipe, options.selectedFieldIds);
+  const payload = {
+    specVersion: "vorovayka.render-export.v1",
+    exportedAt: new Date().toISOString(),
+    source: {
+      capturedAt: capture.createdAt || "",
+      pageUrl: capture.page?.url || "",
+      pageTitle: capture.page?.title || "",
+      confidence: recipe.confidence || ""
+    }
+  };
+
+  if (options.apiRecipe) {
+    payload.apiRecipe = buildExportApiRecipe(recipe, selectedBindings, options);
+  }
+
+  if (options.widget) {
+    payload.widget = buildExportWidget(capture, recipe);
+  }
+
+  if (options.dataModel) {
+    payload.dataModel = buildExportDataModel(recipe, selectedBindings, options);
+  }
+
+  if (options.apiCalls) {
+    payload.apiCalls = buildExportApiCalls(recipe, selectedBindings, options);
+  }
+
+  if (options.apiDependencies) {
+    payload.apiDependencies = getApiDependencies(recipe);
+  }
+
+  if (options.domContext) {
+    payload.domContext = {
+      selector: capture.dom?.selector || recipe.element?.selector || "",
+      tagName: capture.dom?.tagName || recipe.element?.tagName || "",
+      rect: capture.dom?.rect || recipe.element?.rect || {},
+      textFragments: capture.dom?.textFragments || recipe.element?.textFragments || [],
+      attributes: capture.dom?.attributes || recipe.element?.attributes || {},
+      ancestorChain: capture.dom?.ancestorChain || recipe.element?.ancestorChain || []
+    };
+  }
+
+  const debug = {};
+  if (options.rawResponses) {
+    debug.rawResponses = (capture.network || []).map((request) => ({
+      id: request.id || "",
+      method: request.method || "GET",
+      url: request.url || "",
+      status: request.status || 0,
+      contentType: request.contentType || "",
+      requestBody: request.requestBody || "",
+      responseBody: request.responseBody || ""
+    }));
+  }
+  if (options.rawCapture) {
+    debug.capture = capture;
+  }
+  if (Object.keys(debug).length > 0) {
+    payload.debug = debug;
+  }
+
+  return payload;
+}
+
+function buildExportApiRecipe(recipe, bindings, options) {
+  const dependencies = getApiDependencies(recipe).map(formatExportApiDependency);
+  const requiredData = buildExportRequiredData(recipe, bindings, options);
+  const calls = buildExportApiCalls(recipe, bindings, { ...options, rawResponses: false })
+    .map(({ fields, ...call }) => ({
+      ...call,
+      providesData: fields
+    }));
+  const minimalDataMap = buildMinimalApiDataMap(calls, requiredData);
+
+  return {
+    version: 1,
+    exportMode: "minimal-api-data-map",
+    summary: {
+      callsCount: calls.length,
+      requiredDataCount: requiredData.length,
+      dependencyEdgesCount: dependencies.length,
+      confidence: recipe.confidence || "",
+      includesResponseShape: Boolean(options.responseShape),
+      includesRequestDetails: Boolean(options.requestDetails)
+    },
+    minimalDataMap,
+    sequence: buildExportCallSequence(recipe, dependencies),
+    calls,
+    requiredData,
+    dependencies
+  };
+}
+
+function buildExportRequiredData(recipe, bindings, options) {
+  const usedNames = new Map();
+
+  return bindings.map((binding, index) => {
+    const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
+    const jsonPath = binding.responsePath || binding.path || "";
+    const alternatives = options.alternatives
+      ? getBindingAlternatives(recipe, binding).slice(0, 5).map(bindingToExportAlternative)
+      : [];
+
+    return {
+      fieldId: getBindingExportId(binding, index),
+      name,
+      description: describeExportField(binding, name),
+      type: inferExportFieldType(binding),
+      displayValue: binding.domValue || binding.value || "",
+      valueExample: binding.responseValue || binding.value || "",
+      readFrom: {
+        requestId: binding.requestId || "",
+        callOrder: binding.step || null,
+        method: binding.method || "GET",
+        url: binding.url || "",
+        jsonPath,
+        responseKey: binding.responseKey || "",
+        parentObjectPath: binding.parentObjectPath || ""
+      },
+      confidence: binding.confidence || null,
+      reasons: binding.reasons || [],
+      alternatives
+    };
+  });
+}
+
+function buildMinimalApiDataMap(calls, requiredData) {
+  const byRequestId = new Map(calls.map((call) => [call.requestId, call]));
+  const byApi = new Map();
+
+  requiredData.forEach((field) => {
+    const call = byRequestId.get(field.readFrom?.requestId) || {};
+    const key = `${field.readFrom?.method || call.method || "GET"} ${field.readFrom?.url || call.url || ""}`;
+    const current = byApi.get(key) || {
+      requestId: field.readFrom?.requestId || call.requestId || "",
+      order: field.readFrom?.callOrder || call.step || null,
+      method: field.readFrom?.method || call.method || "GET",
+      url: field.readFrom?.url || call.url || "",
+      dataPaths: []
+    };
+
+    current.dataPaths.push({
+      fieldId: field.fieldId,
+      name: field.name,
+      type: field.type,
+      jsonPath: field.readFrom?.jsonPath || "",
+      valueExample: field.valueExample || field.displayValue || "",
+      description: field.description || ""
+    });
+    byApi.set(key, current);
+  });
+
+  return Array.from(byApi.values())
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+}
+
+function buildExportCallSequence(recipe, dependencies = []) {
+  const dependenciesByTarget = new Map();
+  dependencies.forEach((dependency) => {
+    const list = dependenciesByTarget.get(dependency.toRequestId) || [];
+    list.push({
+      fromRequestId: dependency.fromRequestId,
+      fromOrder: dependency.fromOrder,
+      sourceJsonPath: dependency.sourceJsonPath,
+      target: dependency.target,
+      valueExample: dependency.valueExample
+    });
+    dependenciesByTarget.set(dependency.toRequestId, list);
+  });
+
+  return (recipe.apiSequence || []).map((step) => ({
+    order: step.step || null,
+    requestId: step.requestId || "",
+    method: step.method || "GET",
+    url: step.url || "",
+    dependsOn: dependenciesByTarget.get(step.requestId) || []
+  }));
+}
+
+function formatExportApiDependency(edge) {
+  return {
+    fromRequestId: edge.fromRequestId || "",
+    fromOrder: edge.fromStep || null,
+    fromLabel: edge.fromLabel || "",
+    toRequestId: edge.toRequestId || "",
+    toOrder: edge.toStep || null,
+    toLabel: edge.toLabel || "",
+    sourceJsonPath: edge.source?.path || edge.sourcePath || "",
+    sourceKey: edge.source?.key || "",
+    target: {
+      location: edge.target?.location || "",
+      path: edge.target?.path || edge.target?.key || ""
+    },
+    valueExample: edge.value || "",
+    confidence: edge.confidence || null,
+    reasons: edge.reasons || []
+  };
+}
+
+function buildExportWidget(capture, recipe) {
+  return {
+    selector: recipe.element?.selector || capture.dom?.selector || "",
+    tagName: recipe.element?.tagName || capture.dom?.tagName || "",
+    role: recipe.element?.role || capture.dom?.role || "",
+    textPreview: recipe.element?.textPreview || capture.dom?.innerText || "",
+    rect: recipe.element?.rect || capture.dom?.rect || {},
+    previewHTML: capture.dom?.previewHTML || "",
+    renderHint: {
+      usePreviewHTML: Boolean(capture.dom?.previewHTML),
+      styles: "computed-inline"
+    }
+  };
+}
+
+function buildExportDataModel(recipe, bindings, options) {
+  const usedNames = new Map();
+  const fields = bindings.map((binding, index) => {
+    const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
+    const alternatives = options.alternatives
+      ? getBindingAlternatives(recipe, binding).slice(0, 5).map(bindingToExportAlternative)
+      : [];
+
+    return {
+      id: getBindingExportId(binding, index),
+      name,
+      type: inferExportFieldType(binding),
+      displayValue: binding.domValue || binding.value || "",
+      valueExample: binding.responseValue || binding.value || "",
+      source: {
+        requestId: binding.requestId || "",
+        step: binding.step || null,
+        method: binding.method || "GET",
+        url: binding.url || "",
+        jsonPath: binding.responsePath || binding.path || "",
+        responseKey: binding.responseKey || "",
+        parentObjectPath: binding.parentObjectPath || "",
+        confidence: binding.confidence || null,
+        reasons: binding.reasons || []
+      },
+      dom: {
+        selector: binding.dom?.selector || "",
+        value: binding.domValue || binding.value || ""
+      },
+      alternatives
+    };
+  });
+
+  return {
+    objectType: "CapturedWidgetData",
+    fields,
+    schema: Object.fromEntries(fields.map((field) => [
+      field.name,
+      {
+        type: field.type,
+        sourcePath: field.source.jsonPath,
+        endpoint: field.source.url,
+        required: true
+      }
+    ]))
+  };
+}
+
+function buildExportApiCalls(recipe, bindings, options) {
+  const allBindings = getExportBindings(recipe);
+  const bindingsByRequest = new Map();
+  bindings.forEach((binding) => {
+    const list = bindingsByRequest.get(binding.requestId) || [];
+    list.push(binding);
+    bindingsByRequest.set(binding.requestId, list);
+  });
+
+  return (recipe.apiSequence || []).map((step) => {
+    const call = {
+      requestId: step.requestId || "",
+      step: step.step || null,
+      method: step.method || "GET",
+      url: step.url || "",
+      fields: (bindingsByRequest.get(step.requestId) || []).map((binding, index) => {
+        const globalIndex = Math.max(0, allBindings.indexOf(binding));
+        return {
+          fieldId: getBindingExportId(binding, globalIndex || index),
+          name: deriveExportFieldName(binding, globalIndex || index),
+          jsonPath: binding.responsePath || binding.path || "",
+          valueExample: binding.responseValue || binding.value || ""
+        };
+      })
+    };
+
+    if (options.requestDetails) {
+      call.request = {
+        body: step.request?.body || "",
+        headers: step.request?.headers || {}
+      };
+      call.status = step.status || 0;
+      call.contentType = step.contentType || "";
+    }
+
+    if (options.responseShape) {
+      call.responseShape = step.response?.shape || {};
+    }
+
+    if (options.rawResponses) {
+      call.responsePreview = step.response?.bodyPreview || "";
+    }
+
+    return call;
+  });
+}
+
+function getExportBindings(recipe) {
+  return (recipe.bindings || recipe.dataRequirements || []);
+}
+
+function getSelectedExportBindings(recipe, selectedFieldIds) {
+  const bindings = getExportBindings(recipe);
+  if (!selectedFieldIds || selectedFieldIds.size === 0) {
+    return [];
+  }
+
+  return bindings.filter((binding, index) => selectedFieldIds.has(getBindingExportId(binding, index)));
+}
+
+function getBindingExportId(binding, index) {
+  return binding.id || binding.bindingId || `field-${index + 1}`;
+}
+
+function deriveExportFieldName(binding, index) {
+  const raw = binding.responseKey ||
+    String(binding.responsePath || binding.path || "").split(".").pop()?.replace(/\[\d+\]/g, "") ||
+    `field_${index + 1}`;
+  const normalized = String(raw || `field_${index + 1}`)
+    .replace(/[^a-zA-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || `field_${index + 1}`;
+}
+
+function makeUniqueExportName(name, usedNames) {
+  const count = usedNames.get(name) || 0;
+  usedNames.set(name, count + 1);
+  return count === 0 ? name : `${name}_${count + 1}`;
+}
+
+function describeExportField(binding, name) {
+  const displayValue = binding.domValue || binding.value || "";
+  const responseValue = binding.responseValue || binding.value || "";
+  const path = binding.responsePath || binding.path || "";
+  const parts = [`Данные для поля ${name}`];
+
+  if (displayValue) {
+    parts.push(`видимое значение: ${displayValue}`);
+  }
+  if (responseValue && responseValue !== displayValue) {
+    parts.push(`пример из API: ${responseValue}`);
+  }
+  if (path) {
+    parts.push(`читать из ${path}`);
+  }
+
+  return parts.join("; ");
+}
+
+function inferExportFieldType(binding) {
+  if (binding.kind === "duration") {
+    return "duration";
+  }
+  if (["number", "currency", "percent"].includes(binding.kind)) {
+    return binding.kind;
+  }
+  if (binding.kind === "date") {
+    return "date";
+  }
+
+  const value = binding.responseValue || binding.domValue || binding.value || "";
+  if (/^-?\d+(?:\.\d+)?$/.test(String(value))) {
+    return "number";
+  }
+  return "string";
+}
+
+function bindingToExportAlternative(binding) {
+  return {
+    requestId: binding.requestId || "",
+    step: binding.step || null,
+    method: binding.method || "GET",
+    url: binding.url || "",
+    jsonPath: binding.responsePath || binding.path || "",
+    valueExample: binding.responseValue || binding.value || "",
+    confidence: binding.confidence || null,
+    reasons: binding.reasons || []
+  };
 }
 
 function renderRecipe(recipe) {
@@ -205,7 +749,10 @@ function renderBindingDetail(panel, binding, recipe) {
   `;
 
   if (evidence.length > 0) {
-    panel.appendChild(renderCodeBlock("Render evidence", JSON.stringify(evidence, null, 2)));
+    panel.appendChild(renderCodeBlock("Render evidence", JSON.stringify(evidence, null, 2), {
+      collapsed: true,
+      summary: "Подробнее: render evidence"
+    }));
   }
 
   if (alternatives.length > 0) {
@@ -363,11 +910,17 @@ function renderApiStep(step) {
   `;
 
   if (requestBody) {
-    card.appendChild(renderCodeBlock("Request body", requestBody));
+    card.appendChild(renderCodeBlock("Request body", requestBody, {
+      collapsed: true,
+      summary: "Подробнее: request body"
+    }));
   }
 
   if (initiatorStack) {
-    card.appendChild(renderCodeBlock("Frontend call stack", initiatorStack));
+    card.appendChild(renderCodeBlock("Frontend call stack", initiatorStack, {
+      collapsed: true,
+      summary: "Подробнее: frontend call stack"
+    }));
   }
 
   if (matchedFields.length > 0) {
@@ -385,15 +938,31 @@ function renderApiStep(step) {
     card.appendChild(matches);
   }
 
-  card.appendChild(renderCodeBlock("Response shape", JSON.stringify(step.response?.shape || {}, null, 2)));
-  card.appendChild(renderCodeBlock("Response preview", step.response?.bodyPreview || ""));
+  card.appendChild(renderCodeBlock("Response shape", JSON.stringify(step.response?.shape || {}, null, 2), {
+    collapsed: true,
+    summary: "Подробнее: структура ответа"
+  }));
+  card.appendChild(renderCodeBlock("Response preview", step.response?.bodyPreview || "", {
+    collapsed: true,
+    summary: "Подробнее: ответ API"
+  }));
 
   return card;
 }
 
-function renderCodeBlock(title, value) {
-  const surface = document.createElement("div");
-  surface.className = "surface surface--code";
+function renderCodeBlock(title, value, options = {}) {
+  const surface = document.createElement(options.collapsed ? "details" : "div");
+  surface.className = `surface surface--code${options.debug ? " surface--debug" : ""}`;
+
+  if (options.collapsed) {
+    surface.innerHTML = `
+      <summary>${escapeHtml(options.summary || `Подробнее: ${title}`)}</summary>
+      <strong>${escapeHtml(title)}</strong>
+      <pre>${escapeHtml(value || "")}</pre>
+    `;
+    return surface;
+  }
+
   surface.innerHTML = `
     <strong>${escapeHtml(title)}</strong>
     <pre>${escapeHtml(value || "")}</pre>
@@ -431,7 +1000,10 @@ function renderDom(dom) {
   }
 
   section.appendChild(renderCodeBlock("Текст элемента", dom?.innerText || ""));
-  section.appendChild(renderCodeBlock("HTML-фрагмент", dom?.outerHTML || ""));
+  section.appendChild(renderCodeBlock("HTML-фрагмент", dom?.outerHTML || "", {
+    collapsed: true,
+    summary: "Подробнее: HTML-фрагмент"
+  }));
   return section;
 }
 
@@ -483,8 +1055,11 @@ function renderRequests(requests) {
         <div class="request__meta">Status ${escapeHtml(String(request.status || ""))}</div>
       </div>
       <div class="request__meta">${escapeHtml(request.contentType || "unknown content type")}</div>
-      <pre>${escapeHtml(request.responseBody || "")}</pre>
     `;
+    card.appendChild(renderCodeBlock("Response body", request.responseBody || "", {
+      collapsed: true,
+      summary: "Подробнее: сырой ответ"
+    }));
     section.appendChild(card);
   });
 

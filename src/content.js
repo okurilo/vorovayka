@@ -1,5 +1,7 @@
 const NETWORK_EVENT = "__VOROVAYKA_NETWORK_EVENT__";
 const ARMED_ORIGINS_KEY = "armedOrigins";
+const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
+const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
 const MAX_REQUEST_CHARS = 20 * 1024;
@@ -20,23 +22,71 @@ const UI_ROOT_ID = "vorovayka-root";
 const PREVIEW_STYLE_PROPS = [
   "display",
   "box-sizing",
+  "position",
+  "inset",
   "font",
   "font-size",
   "font-family",
   "font-weight",
+  "font-style",
   "line-height",
   "letter-spacing",
   "color",
   "background-color",
+  "background-image",
+  "background-size",
+  "background-position",
+  "background-repeat",
   "border",
+  "border-top",
+  "border-right",
+  "border-bottom",
+  "border-left",
   "border-radius",
+  "box-shadow",
+  "outline",
+  "opacity",
+  "width",
+  "min-width",
+  "max-width",
+  "height",
+  "min-height",
+  "max-height",
   "padding",
   "margin",
+  "gap",
+  "row-gap",
+  "column-gap",
+  "align-items",
+  "align-content",
+  "justify-items",
+  "justify-content",
+  "flex",
+  "flex-direction",
+  "flex-wrap",
+  "flex-grow",
+  "flex-shrink",
+  "flex-basis",
+  "grid-template-columns",
+  "grid-template-rows",
+  "grid-auto-columns",
+  "grid-auto-rows",
+  "grid-column",
+  "grid-row",
+  "place-items",
+  "place-content",
   "text-align",
   "white-space",
   "text-decoration",
   "text-transform",
-  "vertical-align"
+  "vertical-align",
+  "overflow",
+  "overflow-x",
+  "overflow-y",
+  "object-fit",
+  "aspect-ratio",
+  "list-style",
+  "list-style-type"
 ];
 const BLOCKED_PREVIEW_TAGS = new Set(["script", "iframe", "object", "embed", "link", "meta", "base", "noscript"]);
 const URL_ATTRIBUTE_NAMES = new Set(["src", "srcset", "href", "poster", "action", "formaction", "xlink:href"]);
@@ -908,11 +958,15 @@ function getSafeInlineStyle(element) {
       if (!value || value.includes("url(")) {
         return "";
       }
+      if (property === "position" && ["fixed", "sticky"].includes(value.trim())) {
+        return "position: relative";
+      }
       return `${property}: ${value}`;
     })
     .filter(Boolean);
 
   declarations.push("max-width: 100%");
+  declarations.push("min-width: 0");
   return declarations.join("; ");
 }
 
@@ -1174,17 +1228,19 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
 
   reportProgress("Сохраняю локальный capture...", 92);
   await yieldToBrowser();
+  const capture = {
+    createdAt: payload.createdAt,
+    page: payload.page,
+    interaction: payload.interaction,
+    dom: payload.dom,
+    mutationTrace: payload.mutationTrace || [],
+    elementRecipe,
+    cloneSpec: elementRecipe,
+    network: selected
+  };
   await chrome.storage.local.set({
-    latestCapture: {
-      createdAt: payload.createdAt,
-      page: payload.page,
-      interaction: payload.interaction,
-      dom: payload.dom,
-      mutationTrace: payload.mutationTrace || [],
-      elementRecipe,
-      cloneSpec: elementRecipe,
-      network: selected
-    }
+    [LATEST_CAPTURE_STORAGE_KEY]: capture,
+    [COPYABLE_CAPTURE_STORAGE_KEY]: capture
   });
   reportProgress("Планирую автоочистку временных данных...", 98);
   await yieldToBrowser();

@@ -12,13 +12,16 @@
         <p class="eyebrow">Vorovayka</p>
         <h1>API-рецепт выбранного элемента</h1>
         <p class="lead">DOM, HTML-превью, последовательность вызовов и поля ответа, совпавшие с видимыми данными.</p>
+        <p class="song-quote">«Хоп, мусорок» — Воровайки</p>
       </header>
       <section id="state" class="card">
-        <p>Жду новый захват из latestCapture...</p>
+        <p>Жду новый или последний сохранённый захват...</p>
       </section>
-      <section class="card">
-        <h2>Сырой JSON</h2>
-        <pre id="json"></pre>
+      <section class="card card--debug">
+        <details class="debug-panel">
+          <summary>Подробнее: сырой capture JSON</summary>
+          <pre id="json"></pre>
+        </details>
       </section>
     </main>
     <script type="module" src="./viewer.js"></script>

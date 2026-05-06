@@ -10,6 +10,7 @@
 - изолированного HTML-превью выбранного элемента во viewer
 - карты происхождения видимых значений: DOM fact → API response path → render evidence
 - sequence-диаграммы API-зависимостей, если значение из ответа одного захваченного запроса использовано в URL/body/header следующего
+- локальной настраиваемой JSON-выгрузки render-spec для вашей системы
 - передачи данных через `chrome.storage.local.latestCapture`
 - явного включения capture только на выбранном домене
 - popup-меню для включения/выключения capture и копирования результата
@@ -34,12 +35,13 @@
 - Request context: best-effort `requestBody` для `fetch(init.body)` и `XHR.send(body)` с редактированием очевидных секретов
 - Element recipe / clone spec: упорядоченная API-последовательность, shape JSON-ответа, `domFacts`, `responseFacts`, `bindings`, `apiDependencies`, `renderEvidence` и найденные поля, совпавшие с видимыми данными выбранного элемента
 - API dependencies: viewer показывает sequence только при доказанном совпадении “response value из раннего API → request URL/body/header более позднего API”; если таких связей нет, diagram скрыта
+- Export JSON: viewer позволяет выбрать состав локальной выгрузки; по умолчанию включён минимальный `apiRecipe` с API URL, порядком вызовов и JSON-path нужных данных, а `responseShape`, request body/headers, DOM и debug добавляются только отдельными опциями
 - Provenance matching: нормализация текста, чисел, валют, процентов и дат; multi-field context matching внутри одного JSON-объекта; лёгкий DOM mutation trace для evidence “ответ пришёл → DOM изменился”
-- Viewer preview: `previewHTML` рендерится в sandboxed `iframe` с CSP `default-src 'none'`, без внешних ресурсов
+- Viewer preview: `previewHTML` рендерится в sandboxed `iframe` с CSP `default-src 'none'`, без внешних ресурсов; нужные computed styles выбранного фрагмента инлайнятся в безопасном виде
 - Frontend evidence: best-effort call stack места вызова `fetch`/`XHR` сохраняется локально и показывается во viewer
 - Progress UX: долгий анализ показывает этапы и прогресс при выборе элемента и при сохранении/открытии viewer
 - Ограничения: HTML до `50KB`, preview HTML до `50KB`, request body до `20KB`, response body до `100KB`, call stack до `8KB`, не более `8` запросов
-- Безопасность: capture включается только на armed-доменах, может быть выключен из popup, channel page→content изолирован случайным именем события, чувствительные заголовки и очевидные токены редактируются, `latestCapture` очищается после чтения и автоудаляется по TTL
+- Безопасность: capture включается только на armed-доменах, может быть выключен из popup, channel page→content изолирован случайным именем события, чувствительные заголовки и очевидные токены редактируются, `latestCapture` очищается после чтения, а локальная копия для повторного копирования автоудаляется по тому же TTL
 - UX: открытие viewer автоматически сохраняет текущий capture, без двойного действия `сохранить` → `открыть`
 
 ## Что сознательно не покрыто
