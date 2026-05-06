@@ -35,11 +35,34 @@ function renderCapture(capture) {
   wrapper.className = "grid";
 
   const recipe = getElementRecipe(capture);
-  wrapper.appendChild(renderMeta(capture));
-  wrapper.appendChild(renderRecipe(recipe));
-  wrapper.appendChild(renderExportPanel(capture, recipe));
-  wrapper.appendChild(renderDom(capture.dom));
-  wrapper.appendChild(renderRequests(capture.network || []));
+  wrapper.appendChild(renderOverview(capture, recipe));
+  wrapper.appendChild(renderTabbedSections([
+    {
+      id: "fields",
+      label: "Поля",
+      node: renderFieldsTab(recipe)
+    },
+    {
+      id: "api",
+      label: "API",
+      node: renderApiTab(recipe)
+    },
+    {
+      id: "export",
+      label: "Export",
+      node: renderExportPanel(capture, recipe)
+    },
+    {
+      id: "dom",
+      label: "DOM",
+      node: renderDom(capture.dom)
+    },
+    {
+      id: "debug",
+      label: "Debug",
+      node: renderRequests(capture.network || [])
+    }
+  ]));
 
   stateEl.appendChild(wrapper);
   if (rawJsonPanelEl) {
@@ -48,9 +71,35 @@ function renderCapture(capture) {
   jsonEl.textContent = JSON.stringify(capture, null, 2);
 }
 
-function renderMeta(capture) {
+function renderOverview(capture, recipe) {
   const section = document.createElement("section");
-  section.className = "grid";
+  section.className = "overview";
+
+  const top = document.createElement("div");
+  top.className = "overview-grid";
+
+  const preview = document.createElement("div");
+  preview.className = "overview-preview";
+  if (capture.dom?.previewHTML) {
+    preview.appendChild(renderElementPreview(capture.dom.previewHTML));
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Для элемента нет HTML-превью.";
+    preview.appendChild(empty);
+  }
+
+  top.append(preview, renderMeta(capture, recipe));
+  section.append(top, renderMinimalRecipeTable(recipe));
+  return section;
+}
+
+function renderMeta(capture, recipe) {
+  const section = document.createElement("section");
+  section.className = "surface overview-summary";
+  const bindings = getExportBindings(recipe);
+  const steps = recipe.apiSequence || [];
+  const dependencies = getApiDependencies(recipe);
   section.innerHTML = `
     <div class="pill">Получено ${escapeHtml(capture.createdAt || "")}</div>
     <div class="meta-grid">
@@ -66,8 +115,176 @@ function renderMeta(capture) {
         <span class="metric__label">Событие</span>
         <div class="metric__value">${escapeHtml(capture.interaction?.type || "—")} · ${escapeHtml(formatTimestamp(capture.interaction?.timestamp))}</div>
       </article>
+      <article class="metric">
+        <span class="metric__label">Уверенность</span>
+        <div class="metric__value">${escapeHtml(formatConfidence(recipe.confidence))}</div>
+      </article>
+      <article class="metric">
+        <span class="metric__label">API</span>
+        <div class="metric__value">${steps.length}</div>
+      </article>
+      <article class="metric">
+        <span class="metric__label">Поля</span>
+        <div class="metric__value">${bindings.length}</div>
+      </article>
+      <article class="metric">
+        <span class="metric__label">Зависимости</span>
+        <div class="metric__value">${dependencies.length}</div>
+      </article>
     </div>
   `;
+  return section;
+}
+
+function renderMinimalRecipeTable(recipe) {
+  const section = document.createElement("section");
+  section.className = "surface minimal-recipe";
+  const groups = buildMinimalRecipeGroups(recipe);
+
+  section.innerHTML = `
+    <div class="minimal-recipe__header">
+      <div>
+        <h2 class="section-title">Минимальный рецепт</h2>
+        <p class="section-copy">API URL и JSON-path данных, которые нужны для отображения выбранного виджета.</p>
+      </div>
+      <span>${escapeHtml(String(groups.reduce((count, group) => count + group.fields.length, 0)))} полей</span>
+    </div>
+  `;
+
+  if (groups.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Поля данных пока не найдены.";
+    section.appendChild(empty);
+    return section;
+  }
+
+  const list = document.createElement("div");
+  list.className = "minimal-api-list";
+
+  groups.forEach((group) => {
+    const item = document.createElement("article");
+    item.className = "minimal-api";
+
+    const header = document.createElement("div");
+    header.className = "minimal-api__header";
+    header.innerHTML = `
+      <span>#${escapeHtml(String(group.order || ""))}</span>
+      <strong>${escapeHtml(group.method)} ${escapeHtml(group.url || "—")}</strong>
+    `;
+
+    const rows = document.createElement("div");
+    rows.className = "minimal-api__rows";
+    rows.innerHTML = `
+      <div class="minimal-row minimal-row--head">
+        <span>Данные</span>
+        <span>JSON path</span>
+        <span>Пример</span>
+        <span>Score</span>
+      </div>
+    `;
+
+    group.fields.forEach((field) => {
+      const row = document.createElement("div");
+      row.className = "minimal-row";
+      row.innerHTML = `
+        <span>
+          <strong>${escapeHtml(field.name)}</strong>
+          <small>${escapeHtml(field.type)}</small>
+        </span>
+        <code>${escapeHtml(field.jsonPath || "—")}</code>
+        <span>${escapeHtml(field.valueExample || field.displayValue || "—")}</span>
+        <strong>${escapeHtml(formatConfidenceScore(field.confidence))}</strong>
+      `;
+      rows.appendChild(row);
+    });
+
+    item.append(header, rows);
+    list.appendChild(item);
+  });
+
+  section.appendChild(list);
+  return section;
+}
+
+function buildMinimalRecipeGroups(recipe) {
+  const groups = new Map();
+  const usedNames = new Map();
+
+  getExportBindings(recipe).slice(0, 40).forEach((binding, index) => {
+    const method = binding.method || "GET";
+    const url = binding.url || "";
+    const key = `${method} ${url}`;
+    const group = groups.get(key) || {
+      method,
+      url,
+      order: binding.step || null,
+      fields: []
+    };
+    const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
+
+    group.fields.push({
+      fieldId: getBindingExportId(binding, index),
+      requestId: binding.requestId || "",
+      name,
+      type: inferExportFieldType(binding),
+      jsonPath: binding.responsePath || binding.path || "",
+      displayValue: binding.domValue || binding.value || "",
+      valueExample: binding.responseValue || binding.value || "",
+      confidence: binding.confidence || null
+    });
+    groups.set(key, group);
+  });
+
+  return Array.from(groups.values())
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+}
+
+function renderTabbedSections(tabs) {
+  const section = document.createElement("section");
+  section.className = "tabs";
+
+  const nav = document.createElement("div");
+  nav.className = "tabs__nav";
+  nav.setAttribute("role", "tablist");
+
+  const panels = document.createElement("div");
+  panels.className = "tabs__panels";
+
+  tabs.forEach((tab, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `tabs__tab${index === 0 ? " tabs__tab--active" : ""}`;
+    button.textContent = tab.label;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", index === 0 ? "true" : "false");
+    button.setAttribute("aria-controls", `tab-panel-${tab.id}`);
+
+    const panel = document.createElement("div");
+    panel.className = "tabs__panel";
+    panel.id = `tab-panel-${tab.id}`;
+    panel.setAttribute("role", "tabpanel");
+    panel.hidden = index !== 0;
+    panel.appendChild(tab.node);
+
+    button.addEventListener("click", () => {
+      nav.querySelectorAll(".tabs__tab").forEach((item) => {
+        item.classList.remove("tabs__tab--active");
+        item.setAttribute("aria-selected", "false");
+      });
+      panels.querySelectorAll(".tabs__panel").forEach((item) => {
+        item.hidden = true;
+      });
+      button.classList.add("tabs__tab--active");
+      button.setAttribute("aria-selected", "true");
+      panel.hidden = false;
+    });
+
+    nav.appendChild(button);
+    panels.appendChild(panel);
+  });
+
+  section.append(nav, panels);
   return section;
 }
 
@@ -78,36 +295,12 @@ function renderExportPanel(capture, recipe) {
   const bindings = getExportBindings(recipe).slice(0, 40);
   section.innerHTML = `
     <h2 class="section-title">Выгрузка JSON</h2>
-    <p class="section-copy">Минимальный payload: порядок API-вызовов, URL API и JSON-path данных, которые нужны для отображения.</p>
+    <p class="section-copy">В JSON попадёт только выбранный элемент, его верстка, связанные API и JSON-path нужных данных.</p>
   `;
 
   const minimalNote = document.createElement("div");
   minimalNote.className = "export-note";
-  minimalNote.textContent = "По умолчанию выгружается только API-рецепт. Структура ответа, request body/headers, DOM и debug добавляются вручную.";
-
-  const options = document.createElement("div");
-  options.className = "export-options";
-  [
-    ["apiRecipe", "Минимум: API URL + JSON-path", true],
-    ["widget", "Опционально: виджет и превью", false],
-    ["requestDetails", "Опционально: request body/headers", false],
-    ["responseShape", "Опционально: структура ответа", false],
-    ["dataModel", "Модель данных", false],
-    ["apiCalls", "Debug: API-вызовы", false],
-    ["apiDependencies", "Debug: зависимости API", false],
-    ["domContext", "Debug: DOM-контекст", false],
-    ["alternatives", "Альтернативные источники", false],
-    ["rawResponses", "Debug: сырые ответы", false],
-    ["rawCapture", "Debug: полный capture", false]
-  ].forEach(([id, label, checked]) => {
-    const item = document.createElement("label");
-    item.className = "export-check";
-    item.innerHTML = `
-      <input type="checkbox" data-export-option="${escapeHtml(id)}" ${checked ? "checked" : ""} />
-      <span>${escapeHtml(label)}</span>
-    `;
-    options.appendChild(item);
-  });
+  minimalNote.textContent = "Выберите только те поля, которые нужны для рендера. Структура ответа, сырые ответы, DOM-контекст и debug в эту выгрузку не попадают.";
 
   const fields = document.createElement("div");
   fields.className = "export-fields";
@@ -182,25 +375,13 @@ function renderExportPanel(capture, recipe) {
   });
 
   actions.append(copyButton, downloadButton, status);
-  section.append(minimalNote, options, fields, actions, preview);
+  section.append(minimalNote, fields, actions, preview);
   refreshPreview();
   return section;
 }
 
 function collectExportOptions(root) {
-  const isChecked = (id) => Boolean(root.querySelector(`[data-export-option="${id}"]`)?.checked);
   return {
-    apiRecipe: isChecked("apiRecipe"),
-    widget: isChecked("widget"),
-    requestDetails: isChecked("requestDetails"),
-    responseShape: isChecked("responseShape"),
-    dataModel: isChecked("dataModel"),
-    apiCalls: isChecked("apiCalls"),
-    apiDependencies: isChecked("apiDependencies"),
-    domContext: isChecked("domContext"),
-    alternatives: isChecked("alternatives"),
-    rawResponses: isChecked("rawResponses"),
-    rawCapture: isChecked("rawCapture"),
     selectedFieldIds: new Set(
       Array.from(root.querySelectorAll(".export-field__input:checked"))
         .map((input) => input.value)
@@ -210,313 +391,71 @@ function collectExportOptions(root) {
 
 function buildExportPayload(capture, recipe, options) {
   const selectedBindings = getSelectedExportBindings(recipe, options.selectedFieldIds);
-  const payload = {
-    specVersion: "vorovayka.render-export.v1",
-    exportedAt: new Date().toISOString(),
-    source: {
-      capturedAt: capture.createdAt || "",
-      pageUrl: capture.page?.url || "",
-      pageTitle: capture.page?.title || "",
-      confidence: recipe.confidence || ""
-    }
-  };
-
-  if (options.apiRecipe) {
-    payload.apiRecipe = buildExportApiRecipe(recipe, selectedBindings, options);
-  }
-
-  if (options.widget) {
-    payload.widget = buildExportWidget(capture, recipe);
-  }
-
-  if (options.dataModel) {
-    payload.dataModel = buildExportDataModel(recipe, selectedBindings, options);
-  }
-
-  if (options.apiCalls) {
-    payload.apiCalls = buildExportApiCalls(recipe, selectedBindings, options);
-  }
-
-  if (options.apiDependencies) {
-    payload.apiDependencies = getApiDependencies(recipe);
-  }
-
-  if (options.domContext) {
-    payload.domContext = {
-      selector: capture.dom?.selector || recipe.element?.selector || "",
-      tagName: capture.dom?.tagName || recipe.element?.tagName || "",
-      rect: capture.dom?.rect || recipe.element?.rect || {},
-      textFragments: capture.dom?.textFragments || recipe.element?.textFragments || [],
-      attributes: capture.dom?.attributes || recipe.element?.attributes || {},
-      ancestorChain: capture.dom?.ancestorChain || recipe.element?.ancestorChain || []
-    };
-  }
-
-  const debug = {};
-  if (options.rawResponses) {
-    debug.rawResponses = (capture.network || []).map((request) => ({
-      id: request.id || "",
-      method: request.method || "GET",
-      url: request.url || "",
-      status: request.status || 0,
-      contentType: request.contentType || "",
-      requestBody: request.requestBody || "",
-      responseBody: request.responseBody || ""
-    }));
-  }
-  if (options.rawCapture) {
-    debug.capture = capture;
-  }
-  if (Object.keys(debug).length > 0) {
-    payload.debug = debug;
-  }
-
-  return payload;
-}
-
-function buildExportApiRecipe(recipe, bindings, options) {
-  const dependencies = getApiDependencies(recipe).map(formatExportApiDependency);
-  const requiredData = buildExportRequiredData(recipe, bindings, options);
-  const calls = buildExportApiCalls(recipe, bindings, { ...options, rawResponses: false })
-    .map(({ fields, ...call }) => ({
-      ...call,
-      providesData: fields
-    }));
-  const minimalDataMap = buildMinimalApiDataMap(calls, requiredData);
-
   return {
-    version: 1,
-    exportMode: "minimal-api-data-map",
-    summary: {
-      callsCount: calls.length,
-      requiredDataCount: requiredData.length,
-      dependencyEdgesCount: dependencies.length,
-      confidence: recipe.confidence || "",
-      includesResponseShape: Boolean(options.responseShape),
-      includesRequestDetails: Boolean(options.requestDetails)
-    },
-    minimalDataMap,
-    sequence: buildExportCallSequence(recipe, dependencies),
-    calls,
-    requiredData,
-    dependencies
+    specVersion: "vorovayka.element-export.v1",
+    element: buildElementOnlyExport(capture, recipe),
+    api: buildElementOnlyApiExport(recipe, selectedBindings)
   };
 }
 
-function buildExportRequiredData(recipe, bindings, options) {
-  const usedNames = new Map();
-
-  return bindings.map((binding, index) => {
-    const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
-    const jsonPath = binding.responsePath || binding.path || "";
-    const alternatives = options.alternatives
-      ? getBindingAlternatives(recipe, binding).slice(0, 5).map(bindingToExportAlternative)
-      : [];
-
-    return {
-      fieldId: getBindingExportId(binding, index),
-      name,
-      description: describeExportField(binding, name),
-      type: inferExportFieldType(binding),
-      displayValue: binding.domValue || binding.value || "",
-      valueExample: binding.responseValue || binding.value || "",
-      readFrom: {
-        requestId: binding.requestId || "",
-        callOrder: binding.step || null,
-        method: binding.method || "GET",
-        url: binding.url || "",
-        jsonPath,
-        responseKey: binding.responseKey || "",
-        parentObjectPath: binding.parentObjectPath || ""
-      },
-      confidence: binding.confidence || null,
-      reasons: binding.reasons || [],
-      alternatives
-    };
-  });
-}
-
-function buildMinimalApiDataMap(calls, requiredData) {
-  const byRequestId = new Map(calls.map((call) => [call.requestId, call]));
-  const byApi = new Map();
-
-  requiredData.forEach((field) => {
-    const call = byRequestId.get(field.readFrom?.requestId) || {};
-    const key = `${field.readFrom?.method || call.method || "GET"} ${field.readFrom?.url || call.url || ""}`;
-    const current = byApi.get(key) || {
-      requestId: field.readFrom?.requestId || call.requestId || "",
-      order: field.readFrom?.callOrder || call.step || null,
-      method: field.readFrom?.method || call.method || "GET",
-      url: field.readFrom?.url || call.url || "",
-      dataPaths: []
-    };
-
-    current.dataPaths.push({
-      fieldId: field.fieldId,
-      name: field.name,
-      type: field.type,
-      jsonPath: field.readFrom?.jsonPath || "",
-      valueExample: field.valueExample || field.displayValue || "",
-      description: field.description || ""
-    });
-    byApi.set(key, current);
-  });
-
-  return Array.from(byApi.values())
-    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-}
-
-function buildExportCallSequence(recipe, dependencies = []) {
-  const dependenciesByTarget = new Map();
-  dependencies.forEach((dependency) => {
-    const list = dependenciesByTarget.get(dependency.toRequestId) || [];
-    list.push({
-      fromRequestId: dependency.fromRequestId,
-      fromOrder: dependency.fromOrder,
-      sourceJsonPath: dependency.sourceJsonPath,
-      target: dependency.target,
-      valueExample: dependency.valueExample
-    });
-    dependenciesByTarget.set(dependency.toRequestId, list);
-  });
-
-  return (recipe.apiSequence || []).map((step) => ({
-    order: step.step || null,
-    requestId: step.requestId || "",
-    method: step.method || "GET",
-    url: step.url || "",
-    dependsOn: dependenciesByTarget.get(step.requestId) || []
-  }));
-}
-
-function formatExportApiDependency(edge) {
-  return {
-    fromRequestId: edge.fromRequestId || "",
-    fromOrder: edge.fromStep || null,
-    fromLabel: edge.fromLabel || "",
-    toRequestId: edge.toRequestId || "",
-    toOrder: edge.toStep || null,
-    toLabel: edge.toLabel || "",
-    sourceJsonPath: edge.source?.path || edge.sourcePath || "",
-    sourceKey: edge.source?.key || "",
-    target: {
-      location: edge.target?.location || "",
-      path: edge.target?.path || edge.target?.key || ""
-    },
-    valueExample: edge.value || "",
-    confidence: edge.confidence || null,
-    reasons: edge.reasons || []
-  };
-}
-
-function buildExportWidget(capture, recipe) {
+function buildElementOnlyExport(capture, recipe) {
   return {
     selector: recipe.element?.selector || capture.dom?.selector || "",
     tagName: recipe.element?.tagName || capture.dom?.tagName || "",
-    role: recipe.element?.role || capture.dom?.role || "",
-    textPreview: recipe.element?.textPreview || capture.dom?.innerText || "",
-    rect: recipe.element?.rect || capture.dom?.rect || {},
-    previewHTML: capture.dom?.previewHTML || "",
-    renderHint: {
-      usePreviewHTML: Boolean(capture.dom?.previewHTML),
-      styles: "computed-inline"
-    }
+    text: recipe.element?.textPreview || capture.dom?.innerText || "",
+    html: capture.dom?.previewHTML || capture.dom?.outerHTML || ""
   };
 }
 
-function buildExportDataModel(recipe, bindings, options) {
-  const usedNames = new Map();
-  const fields = bindings.map((binding, index) => {
-    const name = makeUniqueExportName(deriveExportFieldName(binding, index), usedNames);
-    const alternatives = options.alternatives
-      ? getBindingAlternatives(recipe, binding).slice(0, 5).map(bindingToExportAlternative)
-      : [];
-
-    return {
-      id: getBindingExportId(binding, index),
-      name,
-      type: inferExportFieldType(binding),
-      displayValue: binding.domValue || binding.value || "",
-      valueExample: binding.responseValue || binding.value || "",
-      source: {
-        requestId: binding.requestId || "",
-        step: binding.step || null,
-        method: binding.method || "GET",
-        url: binding.url || "",
-        jsonPath: binding.responsePath || binding.path || "",
-        responseKey: binding.responseKey || "",
-        parentObjectPath: binding.parentObjectPath || "",
-        confidence: binding.confidence || null,
-        reasons: binding.reasons || []
-      },
-      dom: {
-        selector: binding.dom?.selector || "",
-        value: binding.domValue || binding.value || ""
-      },
-      alternatives
-    };
+function buildElementOnlyApiExport(recipe, bindings) {
+  const groups = buildMinimalRecipeGroups({
+    ...recipe,
+    bindings
   });
+  const dependencies = getApiDependencies(recipe);
 
-  return {
-    objectType: "CapturedWidgetData",
-    fields,
-    schema: Object.fromEntries(fields.map((field) => [
-      field.name,
-      {
+  return groups.map((group) => {
+    const requestId = group.fields[0]?.requestId || findRequestIdForApiGroup(recipe, group) || "";
+    const relatedDependencies = dependencies
+      .filter((edge) => edge.toRequestId === requestId || edge.fromRequestId === requestId)
+      .map((edge) => ({
+        fromRequestId: edge.fromRequestId || "",
+        toRequestId: edge.toRequestId || "",
+        sourceJsonPath: edge.source?.path || edge.sourcePath || "",
+        target: {
+          location: edge.target?.location || "",
+          path: edge.target?.path || edge.target?.key || ""
+        }
+      }));
+
+    const item = {
+      order: group.order,
+      requestId,
+      method: group.method,
+      url: group.url,
+      data: group.fields.map((field) => ({
+        name: field.name,
         type: field.type,
-        sourcePath: field.source.jsonPath,
-        endpoint: field.source.url,
-        required: true
-      }
-    ]))
-  };
-}
-
-function buildExportApiCalls(recipe, bindings, options) {
-  const allBindings = getExportBindings(recipe);
-  const bindingsByRequest = new Map();
-  bindings.forEach((binding) => {
-    const list = bindingsByRequest.get(binding.requestId) || [];
-    list.push(binding);
-    bindingsByRequest.set(binding.requestId, list);
-  });
-
-  return (recipe.apiSequence || []).map((step) => {
-    const call = {
-      requestId: step.requestId || "",
-      step: step.step || null,
-      method: step.method || "GET",
-      url: step.url || "",
-      fields: (bindingsByRequest.get(step.requestId) || []).map((binding, index) => {
-        const globalIndex = Math.max(0, allBindings.indexOf(binding));
-        return {
-          fieldId: getBindingExportId(binding, globalIndex || index),
-          name: deriveExportFieldName(binding, globalIndex || index),
-          jsonPath: binding.responsePath || binding.path || "",
-          valueExample: binding.responseValue || binding.value || ""
-        };
-      })
+        jsonPath: field.jsonPath,
+        valueExample: field.valueExample || field.displayValue || ""
+      }))
     };
 
-    if (options.requestDetails) {
-      call.request = {
-        body: step.request?.body || "",
-        headers: step.request?.headers || {}
-      };
-      call.status = step.status || 0;
-      call.contentType = step.contentType || "";
+    if (relatedDependencies.length > 0) {
+      item.dependencies = relatedDependencies;
     }
 
-    if (options.responseShape) {
-      call.responseShape = step.response?.shape || {};
-    }
-
-    if (options.rawResponses) {
-      call.responsePreview = step.response?.bodyPreview || "";
-    }
-
-    return call;
+    return item;
   });
+}
+
+function findRequestIdForApiGroup(recipe, group) {
+  const step = (recipe.apiSequence || []).find((item) => (
+    item.step === group.order &&
+    item.method === group.method &&
+    item.url === group.url
+  ));
+  return step?.requestId || "";
 }
 
 function getExportBindings(recipe) {
@@ -552,25 +491,6 @@ function makeUniqueExportName(name, usedNames) {
   return count === 0 ? name : `${name}_${count + 1}`;
 }
 
-function describeExportField(binding, name) {
-  const displayValue = binding.domValue || binding.value || "";
-  const responseValue = binding.responseValue || binding.value || "";
-  const path = binding.responsePath || binding.path || "";
-  const parts = [`Данные для поля ${name}`];
-
-  if (displayValue) {
-    parts.push(`видимое значение: ${displayValue}`);
-  }
-  if (responseValue && responseValue !== displayValue) {
-    parts.push(`пример из API: ${responseValue}`);
-  }
-  if (path) {
-    parts.push(`читать из ${path}`);
-  }
-
-  return parts.join("; ");
-}
-
 function inferExportFieldType(binding) {
   if (binding.kind === "duration") {
     return "duration";
@@ -589,17 +509,58 @@ function inferExportFieldType(binding) {
   return "string";
 }
 
-function bindingToExportAlternative(binding) {
-  return {
-    requestId: binding.requestId || "",
-    step: binding.step || null,
-    method: binding.method || "GET",
-    url: binding.url || "",
-    jsonPath: binding.responsePath || binding.path || "",
-    valueExample: binding.responseValue || binding.value || "",
-    confidence: binding.confidence || null,
-    reasons: binding.reasons || []
-  };
+function renderFieldsTab(recipe) {
+  const section = document.createElement("section");
+  section.className = "grid";
+  const bindings = recipe.bindings || recipe.dataRequirements || [];
+
+  section.innerHTML = `
+    <h2 class="section-title">Поля виджета</h2>
+    <p class="section-copy">Значения из выбранного элемента, найденные в ответах API.</p>
+  `;
+
+  if (bindings.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Для элемента пока не найдено полей из API.";
+    section.appendChild(empty);
+    return section;
+  }
+
+  section.appendChild(renderBindingExplorer(recipe));
+  return section;
+}
+
+function renderApiTab(recipe) {
+  const section = document.createElement("section");
+  section.className = "grid";
+  const steps = recipe.apiSequence || [];
+  const apiDependencies = getApiDependencies(recipe);
+
+  section.innerHTML = `
+    <h2 class="section-title">API-вызовы</h2>
+    <p class="section-copy">Подтверждённые запросы, их порядок, найденные поля и доказанные зависимости между вызовами.</p>
+  `;
+
+  if (steps.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Для элемента сохранён только DOM-контекст.";
+    section.appendChild(empty);
+    return section;
+  }
+
+  if (apiDependencies.length > 0) {
+    section.appendChild(renderSequenceDiagram(apiDependencies));
+  }
+
+  const sequence = document.createElement("div");
+  sequence.className = "timeline";
+  steps.forEach((step) => {
+    sequence.appendChild(renderApiStep(step));
+  });
+  section.appendChild(sequence);
+  return section;
 }
 
 function renderRecipe(recipe) {

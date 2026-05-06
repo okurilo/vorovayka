@@ -35,7 +35,8 @@
 - Request context: best-effort `requestBody` для `fetch(init.body)` и `XHR.send(body)` с редактированием очевидных секретов
 - Element recipe / clone spec: упорядоченная API-последовательность, shape JSON-ответа, `domFacts`, `responseFacts`, `bindings`, `apiDependencies`, `renderEvidence` и найденные поля, совпавшие с видимыми данными выбранного элемента
 - API dependencies: viewer показывает sequence только при доказанном совпадении “response value из раннего API → request URL/body/header более позднего API”; если таких связей нет, diagram скрыта
-- Export JSON: viewer позволяет выбрать состав локальной выгрузки; по умолчанию включён минимальный `apiRecipe` с API URL, порядком вызовов и JSON-path нужных данных, а `responseShape`, request body/headers, DOM и debug добавляются только отдельными опциями
+- Export JSON: viewer выгружает строгий `element-export` только по выбранному элементу: верстка элемента и связанные API с JSON-path нужных данных; `responseShape`, сырые ответы, DOM-контекст и debug не попадают в export
+- Viewer UX: первый экран показывает превью, краткие метрики и человеческую таблицу минимального API-рецепта; подробности разнесены по вкладкам `Поля`, `API`, `Export`, `DOM`, `Debug`
 - Provenance matching: нормализация текста, чисел, валют, процентов и дат; multi-field context matching внутри одного JSON-объекта; лёгкий DOM mutation trace для evidence “ответ пришёл → DOM изменился”
 - Viewer preview: `previewHTML` рендерится в sandboxed `iframe` с CSP `default-src 'none'`, без внешних ресурсов; нужные computed styles выбранного фрагмента инлайнятся в безопасном виде
 - Frontend evidence: best-effort call stack места вызова `fetch`/`XHR` сохраняется локально и показывается во viewer
