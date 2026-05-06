@@ -5,17 +5,21 @@ const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
 const MAX_REQUEST_CHARS = 20 * 1024;
-const MAX_RESPONSE_CHARS = 100 * 1024;
+const MAX_RESPONSE_CHARS = 512 * 1024;
 const MAX_PREVIEW_HTML_CHARS = 50 * 1024;
 const MAX_STACK_CHARS = 8 * 1024;
-const MAX_BUFFER_SIZE = 30;
+const MAX_BUFFER_SIZE = 60;
 const MAX_MUTATION_BUFFER_SIZE = 120;
-const MAX_DOM_FACTS = 120;
-const MAX_RESPONSE_FACTS = 500;
+const MAX_DOM_FACTS = 240;
+const MAX_RESPONSE_FACTS_PER_REQUEST = 1500;
+const MAX_TOTAL_RESPONSE_FACTS = 6000;
 const MAX_REQUEST_FACTS = 180;
-const MAX_BINDINGS = 80;
-const MAX_CANDIDATES = 8;
+const MAX_BINDINGS = 160;
+const MAX_CANDIDATES = 12;
 const MAX_API_DEPENDENCIES = 16;
+const MAX_JSON_VISITED_VALUES = 6000;
+const MAX_JSON_ARRAY_ITEMS = 250;
+const MAX_JSON_OBJECT_KEYS = 250;
 const POST_CLICK_WINDOW_MS = 1500;
 const DOM_RENDER_EVIDENCE_WINDOW_MS = 5000;
 const UI_ROOT_ID = "vorovayka-root";
@@ -1269,7 +1273,7 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
       await yieldToBrowser();
     }
   }
-  responseFacts.splice(MAX_RESPONSE_FACTS);
+  responseFacts.splice(MAX_TOTAL_RESPONSE_FACTS);
 
   reportProgress("Связываю DOM-значения с JSON-path...", 66);
   await yieldToBrowser();
@@ -1980,7 +1984,7 @@ function extractResponseFacts(request, step) {
 
   const facts = [];
   walkJsonValues(parsed, "$", (path, value) => {
-    if (facts.length >= MAX_RESPONSE_FACTS || value == null || typeof value === "object") {
+    if (facts.length >= MAX_RESPONSE_FACTS_PER_REQUEST || value == null || typeof value === "object") {
       return;
     }
 
@@ -2126,7 +2130,7 @@ function factComparableNumbers(fact) {
 
 function normalizePaddedDecimalNumber(value) {
   const text = String(value ?? "").trim().replace(/\s+/g, "");
-  const match = text.match(/^([-+]?\d+)[,.](\d{3,4})$/);
+  const match = text.match(/^([-+]?\d+)[,.](\d{1,4})$/);
   if (!match || !/^0+$/.test(match[2])) {
     return "";
   }
@@ -2433,7 +2437,7 @@ function extractMatchFragments(text) {
 }
 
 function walkJsonValues(value, path, visitor, depth = 0, state = { visited: 0 }) {
-  if (state.visited > 500 || depth > 6) {
+  if (state.visited > MAX_JSON_VISITED_VALUES || depth > 8) {
     return;
   }
 
@@ -2441,14 +2445,14 @@ function walkJsonValues(value, path, visitor, depth = 0, state = { visited: 0 })
   visitor(path, value);
 
   if (Array.isArray(value)) {
-    value.slice(0, 50).forEach((item, index) => {
+    value.slice(0, MAX_JSON_ARRAY_ITEMS).forEach((item, index) => {
       walkJsonValues(item, `${path}[${index}]`, visitor, depth + 1, state);
     });
     return;
   }
 
   if (value && typeof value === "object") {
-    Object.entries(value).slice(0, 50).forEach(([key, entryValue]) => {
+    Object.entries(value).slice(0, MAX_JSON_OBJECT_KEYS).forEach(([key, entryValue]) => {
       walkJsonValues(entryValue, `${path}.${key}`, visitor, depth + 1, state);
     });
   }

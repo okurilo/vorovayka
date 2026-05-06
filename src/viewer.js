@@ -500,7 +500,11 @@ function getExportBindings(recipe, options = {}) {
 }
 
 function mergeDerivedPrimaryValueBindings(recipe, baseBindings) {
-  const derived = deriveMissingPrimaryValueBindings(recipe, baseBindings);
+  const derived = [
+    ...deriveSiblingPrimaryValueBindings(recipe, baseBindings),
+    ...deriveNetworkPrimaryValueBindings(recipe, baseBindings),
+    ...deriveMissingPrimaryValueBindings(recipe, baseBindings)
+  ];
   if (derived.length === 0) {
     return baseBindings;
   }
@@ -522,12 +526,13 @@ function mergeDerivedPrimaryValueBindings(recipe, baseBindings) {
 }
 
 function deriveMissingPrimaryValueBindings(recipe, baseBindings) {
-  const domFacts = (recipe.domFacts || []).filter(isPrimaryVisibleFact);
+  const domFacts = getPrimaryDomFacts(recipe);
   const responseFacts = recipe.responseFacts || [];
   if (domFacts.length === 0 || responseFacts.length === 0) {
     return [];
   }
 
+  const scope = buildBindingScope(baseBindings);
   const existing = new Set(baseBindings.map((binding) => [
     binding.requestId || "",
     binding.responsePath || binding.path || "",
@@ -541,6 +546,10 @@ function deriveMissingPrimaryValueBindings(recipe, baseBindings) {
 
   domFacts.forEach((domFact) => {
     responseFacts.forEach((responseFact) => {
+      if (!isResponseFactInScope(responseFact, scope)) {
+        return;
+      }
+
       const match = scorePrimaryValueFallback(domFact, responseFact, elementContext);
       if (!match) {
         return;
@@ -590,8 +599,419 @@ function deriveMissingPrimaryValueBindings(recipe, baseBindings) {
     .slice(0, 12);
 }
 
+function deriveSiblingPrimaryValueBindings(recipe, sourceBindings) {
+  const domFacts = getPrimaryDomFacts(recipe);
+  if (domFacts.length === 0 || sourceBindings.length === 0) {
+    return [];
+  }
+
+  const elementContext = normalizeViewerText([
+    recipe.element?.textPreview,
+    ...(recipe.element?.textFragments || [])
+  ].filter(Boolean).join(" "));
+  const candidates = [];
+
+  sourceBindings.forEach((binding) => {
+    const siblingFields = binding.response?.siblingFields || {};
+    const parentObjectPath = getBindingParentObjectPath(binding);
+    if (!parentObjectPath || Object.keys(siblingFields).length === 0) {
+      return;
+    }
+
+    Object.entries(siblingFields).forEach(([key, value]) => {
+      if (key === binding.responseKey || !isPotentialPrimaryResponseValue(key, value)) {
+        return;
+      }
+
+      const kind = classifyViewerFact(value);
+      const responseFact = {
+        id: `sibling-${binding.id || binding.bindingId || binding.requestId || "binding"}-${key}`,
+        requestId: binding.requestId || "",
+        step: binding.step || null,
+        method: binding.method || "GET",
+        url: binding.url || "",
+        path: buildJsonChildPath(parentObjectPath, key),
+        key,
+        parentObjectPath,
+        kind,
+        value: String(value ?? ""),
+        normalizedValue: normalizeViewerFactValue(value, kind),
+        siblingFields
+      };
+
+      domFacts.forEach((domFact) => {
+        const match = scorePrimaryValueFallback(domFact, responseFact, elementContext);
+        if (!match) {
+          return;
+        }
+
+        candidates.push({
+          id: `derived-sibling-${domFact.id || "dom"}-${responseFact.id}`,
+          domFactId: domFact.id || "",
+          responseFactId: responseFact.id,
+          requestId: responseFact.requestId,
+          step: responseFact.step,
+          method: responseFact.method,
+          url: responseFact.url,
+          responsePath: responseFact.path,
+          responseKey: responseFact.key,
+          parentObjectPath,
+          domValue: domFact.value || "",
+          responseValue: responseFact.value,
+          kind: domFact.kind || responseFact.kind,
+          matchType: match.type,
+          confidence: Math.min(0.95, Math.round((match.confidence + 0.03) * 100) / 100),
+          reasons: [...match.reasons, "same-response-object"],
+          dom: {
+            selector: domFact.selector || "",
+            context: domFact.context || {},
+            rect: domFact.rect || null
+          },
+          response: {
+            siblingFields
+          },
+          evidence: []
+        });
+      });
+    });
+  });
+
+  return candidates
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || Number(a.step || 0) - Number(b.step || 0))
+    .slice(0, 12);
+}
+
+function deriveNetworkPrimaryValueBindings(recipe, sourceBindings) {
+  const domFacts = getPrimaryDomFacts(recipe);
+  const requests = getViewerNetworkRequests(recipe);
+  if (domFacts.length === 0 || requests.length === 0) {
+    return [];
+  }
+
+  const scope = buildBindingScope(sourceBindings);
+  const elementContext = normalizeViewerText([
+    recipe.element?.textPreview,
+    ...(recipe.element?.textFragments || [])
+  ].filter(Boolean).join(" "));
+  const candidates = [];
+
+  requests.forEach((request, requestIndex) => {
+    const requestId = request.id || request.requestId || `request-${requestIndex + 1}`;
+    if (scope.active && scope.requestIds.size > 0 && !scope.requestIds.has(requestId)) {
+      return;
+    }
+
+    const parsed = parseViewerJsonBody(request.responseBody || request.response?.bodyPreview || "");
+    if (parsed == null) {
+      return;
+    }
+
+    walkViewerJsonValues(parsed, "$", (path, value) => {
+      if (candidates.length >= 80 || value == null || typeof value === "object") {
+        return;
+      }
+
+      const key = extractViewerJsonKey(path);
+      if (!isPotentialPrimaryResponseValue(key, value)) {
+        return;
+      }
+
+      const parentObjectPath = extractViewerParentObjectPath(path);
+      const responseFact = {
+        id: `raw-response-${requestId}-${path}`,
+        requestId,
+        step: request.step || findStepNumberForRequest(recipe, requestId) || requestIndex + 1,
+        method: request.method || "GET",
+        url: request.url || "",
+        path,
+        key,
+        parentObjectPath,
+        kind: classifyViewerFact(value),
+        value: String(value ?? ""),
+        normalizedValue: normalizeViewerFactValue(value),
+        siblingFields: extractViewerSiblingFields(parsed, path)
+      };
+
+      if (!isResponseFactInScope(responseFact, scope)) {
+        return;
+      }
+
+      domFacts.forEach((domFact) => {
+        const match = scorePrimaryValueFallback(domFact, responseFact, elementContext);
+        if (!match) {
+          return;
+        }
+
+        candidates.push({
+          id: `derived-raw-${domFact.id || "dom"}-${requestId}-${path}`,
+          domFactId: domFact.id || "",
+          responseFactId: responseFact.id,
+          requestId,
+          step: responseFact.step,
+          method: responseFact.method,
+          url: responseFact.url,
+          responsePath: responseFact.path,
+          responseKey: responseFact.key,
+          parentObjectPath,
+          domValue: domFact.value || "",
+          responseValue: responseFact.value,
+          kind: domFact.kind || responseFact.kind,
+          matchType: match.type,
+          confidence: Math.min(0.96, Math.round((match.confidence + 0.04) * 100) / 100),
+          reasons: [...match.reasons, "raw-response-scan"],
+          dom: {
+            selector: domFact.selector || "",
+            context: domFact.context || {},
+            rect: domFact.rect || null
+          },
+          response: {
+            siblingFields: responseFact.siblingFields || {}
+          },
+          evidence: []
+        });
+      });
+    });
+  });
+
+  return candidates
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || Number(a.step || 0) - Number(b.step || 0))
+    .slice(0, 20);
+}
+
+function buildBindingScope(bindings) {
+  const requestIds = new Set();
+  const objectKeys = new Set();
+
+  bindings.forEach((binding) => {
+    const requestId = binding.requestId || "";
+    const parentPath = getBindingParentObjectPath(binding);
+    if (requestId) {
+      requestIds.add(requestId);
+    }
+    if (requestId && parentPath) {
+      objectKeys.add(`${requestId}::${parentPath}`);
+    }
+  });
+
+  return {
+    active: requestIds.size > 0 || objectKeys.size > 0,
+    requestIds,
+    objectKeys
+  };
+}
+
+function isResponseFactInScope(responseFact, scope) {
+  if (!scope.active) {
+    return true;
+  }
+
+  const requestId = responseFact.requestId || "";
+  const parentPath = responseFact.parentObjectPath || extractViewerParentObjectPath(responseFact.path);
+  if (scope.objectKeys.size > 0) {
+    return Boolean(requestId && parentPath && scope.objectKeys.has(`${requestId}::${parentPath}`));
+  }
+
+  return (
+    requestId && scope.requestIds.has(requestId)
+  );
+}
+
+function getBindingParentObjectPath(binding) {
+  return binding.parentObjectPath || extractViewerParentObjectPath(binding.responsePath || binding.path || "");
+}
+
+function extractViewerParentObjectPath(path) {
+  return String(path || "$")
+    .replace(/\.[^.[]+$/, "")
+    .replace(/\[\d+\]\.[^.[]+$/, "");
+}
+
+function buildJsonChildPath(parentPath, key) {
+  return `${parentPath || "$"}.${key}`;
+}
+
+function getViewerNetworkRequests(recipe) {
+  if (Array.isArray(recipe.__viewerNetwork) && recipe.__viewerNetwork.length > 0) {
+    return recipe.__viewerNetwork;
+  }
+
+  return (recipe.apiSequence || [])
+    .filter((step) => step?.response?.bodyPreview)
+    .map((step) => ({
+      id: step.requestId,
+      requestId: step.requestId,
+      step: step.step,
+      method: step.method,
+      url: step.url,
+      responseBody: step.response?.bodyPreview || ""
+    }));
+}
+
+function parseViewerJsonBody(body) {
+  const text = String(body || "").trim();
+  if (!text || !/^[\[{]/.test(text)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function walkViewerJsonValues(value, path, visitor, depth = 0, state = { visited: 0 }) {
+  if (state.visited > 6000 || depth > 8) {
+    return;
+  }
+
+  state.visited += 1;
+  visitor(path, value);
+
+  if (Array.isArray(value)) {
+    value.slice(0, 250).forEach((item, index) => {
+      walkViewerJsonValues(item, `${path}[${index}]`, visitor, depth + 1, state);
+    });
+    return;
+  }
+
+  if (value && typeof value === "object") {
+    Object.entries(value).slice(0, 250).forEach(([key, entryValue]) => {
+      walkViewerJsonValues(entryValue, `${path}.${key}`, visitor, depth + 1, state);
+    });
+  }
+}
+
+function extractViewerJsonKey(path) {
+  const match = String(path || "").match(/\.([^.[]+)(?:\[\d+\])?$/);
+  return match ? match[1] : "";
+}
+
+function extractViewerSiblingFields(root, path) {
+  const parent = getViewerJsonValueByPath(root, extractViewerParentObjectPath(path));
+  if (!parent || typeof parent !== "object" || Array.isArray(parent)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(parent)
+      .filter(([, value]) => value != null && typeof value !== "object")
+      .slice(0, 40)
+      .map(([key, value]) => [key, String(value).slice(0, 160)])
+  );
+}
+
+function getViewerJsonValueByPath(root, path) {
+  if (path === "$") {
+    return root;
+  }
+
+  const tokens = Array.from(String(path || "").replace(/^\$/, "").matchAll(/\.?([^\.\[\]]+)|\[(\d+)\]/g));
+  let current = root;
+
+  for (const token of tokens) {
+    if (current == null) {
+      return null;
+    }
+    if (token[2] != null) {
+      current = Array.isArray(current) ? current[Number(token[2])] : null;
+    } else {
+      current = current[token[1]];
+    }
+  }
+
+  return current;
+}
+
+function findStepNumberForRequest(recipe, requestId) {
+  return (recipe.apiSequence || []).find((step) => step.requestId === requestId)?.step || null;
+}
+
+function isPotentialPrimaryResponseValue(key, value) {
+  const text = String(value ?? "").trim();
+  if (!text || isLowSignalExportValue(text)) {
+    return false;
+  }
+
+  if (classifyViewerFact(text) !== "text") {
+    return true;
+  }
+
+  return /(count|counter|amount|balance|quota|limit|days?|duration|total|remain|available|used|остат|кол|дн|дней|лимит)/i.test(key);
+}
+
 function isPrimaryVisibleFact(fact) {
   return ["duration", "number", "currency", "percent"].includes(fact?.kind) && Boolean(fact?.normalizedValue);
+}
+
+function getPrimaryDomFacts(recipe) {
+  const seen = new Set();
+  const facts = [];
+  const addFact = (fact) => {
+    if (!isPrimaryVisibleFact(fact)) {
+      return;
+    }
+    const key = `${fact.kind}:${fact.normalizedValue}:${normalizeViewerText(fact.value || "")}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    facts.push(fact);
+  };
+
+  (recipe.domFacts || []).forEach(addFact);
+  extractPrimaryVisibleFactsFromText([
+    recipe.element?.textPreview,
+    ...(recipe.element?.textFragments || [])
+  ].filter(Boolean).join(" ")).forEach(addFact);
+
+  return facts;
+}
+
+function extractPrimaryVisibleFactsFromText(text) {
+  const sourceText = String(text || "").replace(/\s+/g, " ").trim();
+  if (!sourceText) {
+    return [];
+  }
+
+  const facts = [];
+  const push = (value, kind = classifyViewerFact(value)) => {
+    const normalizedValue = normalizeViewerFactValue(value, kind);
+    if (!normalizedValue) {
+      return;
+    }
+    facts.push({
+      id: `virtual-domfact-${facts.length + 1}`,
+      kind,
+      value: String(value ?? "").trim(),
+      normalizedValue,
+      selector: "",
+      context: {
+        selectedText: sourceText,
+        elementText: sourceText,
+        rowText: sourceText
+      }
+    });
+  };
+
+  Array.from(sourceText.matchAll(/[-+]?\d+(?:[.,]\d+)?\s*(?:дн(?:ей|я|ь)?|день|сут(?:ок|ки)?|day|days)/gi)).forEach((match) => {
+    push(match[0], "duration");
+  });
+
+  Array.from(sourceText.matchAll(/[-+]?\d[\d\s.,]*(?:[%₽$€£¥]| руб\.?| rub| usd| eur)?/gi)).forEach((match) => {
+    if (isEmbeddedViewerNumberMatch(sourceText, match.index || 0, match[0])) {
+      return;
+    }
+    push(match[0], classifyViewerFact(match[0]));
+  });
+
+  return facts.slice(0, 20);
+}
+
+function isEmbeddedViewerNumberMatch(sourceText, index, value) {
+  const before = sourceText[index - 1] || "";
+  const after = sourceText[index + String(value || "").length] || "";
+  return /[\p{L}\p{N}_]/u.test(before) || /[\p{L}_]/u.test(after);
 }
 
 function scorePrimaryValueFallback(domFact, responseFact, elementContext) {
@@ -687,7 +1107,7 @@ function getViewerComparableNumbers(fact) {
 
 function normalizeViewerPaddedDecimal(value) {
   const text = String(value ?? "").trim().replace(/\s+/g, "");
-  const match = text.match(/^([-+]?\d+)[,.](\d{3,4})$/);
+  const match = text.match(/^([-+]?\d+)[,.](\d{1,4})$/);
   if (!match || !/^0+$/.test(match[2])) {
     return "";
   }
@@ -727,7 +1147,8 @@ function getSelectedExportBindings(recipe, selectedFieldIds) {
     return [];
   }
 
-  return bindings.filter((binding, index) => selectedFieldIds.has(getBindingExportId(binding, index)));
+  const selected = bindings.filter((binding, index) => selectedFieldIds.has(getBindingExportId(binding, index)));
+  return mergeDerivedPrimaryValueBindings(recipe, selected);
 }
 
 function getBindingExportId(binding, index) {
@@ -1288,15 +1709,15 @@ function renderRequests(requests) {
 
 function getElementRecipe(capture) {
   if (capture.cloneSpec) {
-    return capture.cloneSpec;
+    return attachViewerNetwork(capture.cloneSpec, capture.network || []);
   }
 
   if (capture.elementRecipe) {
-    return capture.elementRecipe;
+    return attachViewerNetwork(capture.elementRecipe, capture.network || []);
   }
 
   const network = capture.network || [];
-  return {
+  return attachViewerNetwork({
     version: 0,
     confidence: network.length > 0 ? "low" : "dom-only",
     element: {
@@ -1332,6 +1753,13 @@ function getElementRecipe(capture) {
     apiDependencies: [],
     dataRequirements: [],
     sequence: []
+  }, network);
+}
+
+function attachViewerNetwork(recipe, network) {
+  return {
+    ...recipe,
+    __viewerNetwork: network
   };
 }
 
@@ -1377,6 +1805,76 @@ function normalizeViewerText(value) {
     .trim();
 }
 
+function classifyViewerFact(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "text";
+  }
+  if (/(?:[$€£₽¥]|руб\.?|rub|usd|eur)/i.test(text)) {
+    return "currency";
+  }
+  if (/[-+]?\d+(?:[.,]\d+)?\s*(?:дн(?:ей|я|ь)?|день|сут(?:ок|ки)?|day|days)/i.test(text)) {
+    return "duration";
+  }
+  if (/%/.test(text)) {
+    return "percent";
+  }
+  if (/\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2})\b/.test(text)) {
+    return "date";
+  }
+  if (/^[-+]?\d[\d\s.,]*(?:[%₽$€£¥]| руб\.?| rub| usd| eur)?$/i.test(text)) {
+    return "number";
+  }
+  return "text";
+}
+
+function normalizeViewerFactValue(value, kind = classifyViewerFact(value)) {
+  if (kind === "duration") {
+    const number = normalizeViewerNumber(value);
+    return number ? `${number}:day` : "";
+  }
+  if (["number", "currency", "percent"].includes(kind)) {
+    return normalizeViewerNumber(value);
+  }
+  if (kind === "date") {
+    return normalizeViewerText(value);
+  }
+  return normalizeViewerText(value);
+}
+
+function normalizeViewerNumber(value) {
+  const raw = String(value ?? "")
+    .replace(/[^\d,.\-+]/g, "")
+    .replace(/\s+/g, "");
+  if (!/\d/.test(raw)) {
+    return "";
+  }
+
+  const lastComma = raw.lastIndexOf(",");
+  const lastDot = raw.lastIndexOf(".");
+  if (lastComma >= 0 || lastDot >= 0) {
+    const separatorIndex = Math.max(lastComma, lastDot);
+    const decimalPart = raw.slice(separatorIndex + 1);
+    if (decimalPart.length > 0 && decimalPart.length <= 2) {
+      return `${raw.slice(0, separatorIndex).replace(/[,.]/g, "")}.${decimalPart}`.replace(/^\+/, "");
+    }
+    return raw.replace(/[,.]/g, "").replace(/^\+/, "");
+  }
+
+  return raw.replace(/^\+/, "");
+}
+
+function isLowSignalExportValue(value) {
+  const normalized = normalizeViewerText(value);
+  return (
+    !normalized ||
+    normalized === "true" ||
+    normalized === "false" ||
+    normalized === "null" ||
+    normalized === "undefined"
+  );
+}
+
 function formatReason(reason) {
   const labels = {
     "exact-text-match": "точный текст",
@@ -1397,7 +1895,8 @@ function formatReason(reason) {
     "request-header": "совпало с request header",
     "request-key-context": "совпал контекст ключа запроса",
     "semantic-request-context": "семантика запроса совпала",
-    "derived-visible-primary-value": "восстановлено из видимого значения"
+    "derived-visible-primary-value": "восстановлено из видимого значения",
+    "same-response-object": "тот же объект ответа"
   };
 
   return labels[reason] || reason;

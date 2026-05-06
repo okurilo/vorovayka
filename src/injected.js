@@ -1,8 +1,8 @@
 (() => {
   const EVENT_NAME = document.currentScript?.dataset.eventName || "__VOROVAYKA_NETWORK_EVENT__";
   const MAX_REQUEST_CHARS = 20 * 1024;
-  const MAX_RESPONSE_CHARS = 100 * 1024;
-  const MAX_BUFFERED_BODY_BYTES = 100 * 1024;
+  const MAX_RESPONSE_CHARS = 512 * 1024;
+  const MAX_BUFFERED_BODY_BYTES = 512 * 1024;
   const MAX_STACK_CHARS = 8 * 1024;
   const FETCH_WRAPPER_MARK = "__vorovaykaFetchWrapper__";
   const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|cookie|session|csrf|xsrf|api[-_]?key|jwt)/i;
