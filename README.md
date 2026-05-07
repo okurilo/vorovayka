@@ -5,7 +5,7 @@
 - выбора DOM-узла на странице
 - сбора ограниченного DOM snapshot
 - захвата последних релевантных `fetch`/`XHR`
-- выбора до 8 запросов пользователем
+- выбора до 20 запросов пользователем
 - сборки эвристического API-рецепта выбранного элемента
 - изолированного HTML-превью выбранного элемента во viewer
 - карты происхождения видимых значений: DOM fact → API response path → render evidence
@@ -14,6 +14,7 @@
 - передачи данных через `chrome.storage.local.latestCapture`
 - явного включения capture только на выбранном домене
 - popup-меню для включения/выключения capture и копирования результата
+- компактного `captureBundle` для копирования и viewer
 
 ## Как проверить
 
@@ -29,19 +30,19 @@
 
 ## Что входит в MVP
 
-- DOM snapshot: `outerHTML`, `previewHTML`, `innerText`, `rect`, `selector`, `ancestorChain`, `dataset`, `aria`, `role`, ограниченные computed styles
-- Network capture: ring buffer `N=30`
+- DOM snapshot: `outerHTML`, `rawHtml`, `cleanHtml`, `previewHTML`, `innerText`, `rect`, `selector`, `ancestorChain`, `dataset`, `aria`, `role`, ограниченные computed styles
+- Network capture: ring buffer `N=60`
 - Фильтрация: убираются `OPTIONS`, analytics/telemetry и статические ресурсы
 - Request context: best-effort `requestBody` для `fetch(init.body)` и `XHR.send(body)` с редактированием очевидных секретов
 - Element recipe / clone spec: упорядоченная API-последовательность, shape JSON-ответа, `domFacts`, `responseFacts`, `bindings`, `apiDependencies`, `renderEvidence` и найденные поля, совпавшие с видимыми данными выбранного элемента
 - API dependencies: viewer показывает sequence только при доказанном совпадении “response value из раннего API → request URL/body/header более позднего API”; если таких связей нет, diagram скрыта
 - Export JSON: viewer выгружает строгий `element-export` только по выбранному элементу: верстка элемента и связанные API с JSON-path нужных данных; `responseShape`, сырые ответы, DOM-контекст и debug не попадают в export
-- Viewer UX: первый экран показывает превью, краткие метрики и человеческую таблицу минимального API-рецепта; подробности разнесены по вкладкам `Поля`, `API`, `Export`, `DOM`, `Debug`
+- Viewer UX: первый экран сфокусирован только на `DOM preview`, списке выбранных API и экспорте с preview итогового payload; raw debug остаётся вторичным
 - Provenance matching: нормализация текста, чисел, валют, процентов и дат; multi-field context matching внутри одного JSON-объекта; лёгкий DOM mutation trace для evidence “ответ пришёл → DOM изменился”
 - Viewer preview: `previewHTML` рендерится в sandboxed `iframe` с CSP `default-src 'none'`, без внешних ресурсов; нужные computed styles выбранного фрагмента инлайнятся в безопасном виде
 - Frontend evidence: best-effort call stack места вызова `fetch`/`XHR` сохраняется локально и показывается во viewer
 - Progress UX: долгий анализ показывает этапы и прогресс при выборе элемента и при сохранении/открытии viewer
-- Ограничения: HTML до `50KB`, preview HTML до `50KB`, request body до `20KB`, response body до `100KB`, call stack до `8KB`, не более `8` запросов
+- Ограничения: HTML до `50KB`, preview HTML до `50KB`, request body до `20KB`, response body до `512KB`, call stack до `8KB`, в модалке может быть показано до `20` запросов
 - Безопасность: capture включается только на armed-доменах, может быть выключен из popup, channel page→content изолирован случайным именем события, чувствительные заголовки и очевидные токены редактируются, `latestCapture` очищается после чтения, а локальная копия для повторного копирования автоудаляется по тому же TTL
 - UX: открытие viewer автоматически сохраняет текущий capture, без двойного действия `сохранить` → `открыть`
 
@@ -51,3 +52,24 @@
 - DevTools/CDP/WebSocket/GraphQL
 - устойчивость ко всем типам навигации и edge-case SPA
 - production-grade защита от всех видов секретов внутри произвольных text response body
+
+## Как работает DOM ↔ API matching
+
+1. Пользователь выбирает DOM-узел, и расширение снимает snapshot выбранного поддерева.
+2. Из текста выбранного поддерева собираются `domFacts`: текстовые фрагменты, числа, валюты, проценты, даты и duration-значения.
+3. Вооружённый домен параллельно накапливает локальный ring buffer `fetch`/`XHR` с телом ответа, request body, заголовками и временем запроса.
+4. Для каждого buffered API-кандидата считается score:
+   - запрос был после взаимодействия пользователя;
+   - запрос свежий относительно текущего выбора;
+   - фрагменты текста DOM находятся в response body;
+   - нормализованные `domFacts` совпадают с JSON/text-фактами ответа.
+5. В модалку попадает расширенный top-list кандидатов, а не только самые жёстко отфильтрованные записи. Лучшие по score отмечаются автоматически.
+6. После ручного выбора API строится `cloneSpec`: ответы выбранных запросов обходятся как JSON/text, из них извлекаются `responseFacts`, затем DOM-факты сопоставляются с ответами по:
+   - нормализованному значению;
+   - совпадению типа значения;
+   - контексту соседних полей в DOM и в JSON-объекте;
+   - дополнительному evidence из mutation trace, если DOM обновился после прихода ответа.
+7. Алгоритм остаётся эвристическим:
+   - возможны ложные совпадения для коротких или слабосигнальных значений;
+   - нужный API может не попасть в top-list, если ответ пришёл слишком рано, был урезан лимитами или не содержит явных совпадений с DOM;
+   - quota-compaction и truncation могут ослабить поздний анализ во viewer.

@@ -3,6 +3,11 @@ const originEl = document.getElementById("origin");
 const messageEl = document.getElementById("message");
 const domainBadge = document.getElementById("domainBadge");
 const captureBadge = document.getElementById("captureBadge");
+const captureReadyBadge = document.getElementById("captureReadyBadge");
+const selectionSummaryEl = document.getElementById("selectionSummary");
+const selectionBadge = document.getElementById("selectionBadge");
+const apiCountBadge = document.getElementById("apiCountBadge");
+const captureTimeBadge = document.getElementById("captureTimeBadge");
 const armedToggle = document.getElementById("armedToggle");
 const startButton = document.getElementById("startButton");
 const copyButton = document.getElementById("copyButton");
@@ -55,10 +60,10 @@ copyButton.addEventListener("click", async () => {
   }
 
   try {
-    await navigator.clipboard.writeText(JSON.stringify(capture, null, 2));
+    await navigator.clipboard.writeText(JSON.stringify(capture.captureBundle || capture, null, 2));
     setMessage(stored[LATEST_CAPTURE_STORAGE_KEY]
-      ? "Захват скопирован. Viewer тоже сможет его открыть."
-      : "Последний захват скопирован из локальной копии.");
+      ? "Захват скопирован."
+      : "Скопирована локальная копия захвата.");
   } catch {
     setMessage("Не удалось скопировать.");
   }
@@ -97,6 +102,7 @@ function renderState() {
   const hasLatestCapture = Boolean(popupState?.hasLatestCapture);
   const hasCopyableCapture = Boolean(popupState?.hasCopyableCapture);
   const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
+  const summary = popupState?.captureSummary || null;
 
   const originText = popupState?.origin ? simplifyOrigin(popupState.origin) : "Неподдерживаемая вкладка";
 
@@ -110,12 +116,13 @@ function renderState() {
   copyButton.disabled = !hasAnyCapture;
   copyButton.textContent = hasLatestCapture || !hasAnyCapture ? "Скопировать захват" : "Скопировать последний";
   clearButton.disabled = !hasAnyCapture;
+  renderCaptureSummary(summary, hasAnyCapture);
 
   if (!messageEl.textContent) {
     if (hasLatestCapture) {
-      setMessage("Новый захват готов: можно открыть viewer или скопировать JSON.");
+      setMessage("Новый захват готов.");
     } else if (hasCopyableCapture) {
-      setMessage("Viewer уже забрал одноразовый capture; локальная копия ещё доступна для повторного копирования.");
+      setMessage("Локальная копия захвата ещё доступна.");
     }
   }
 
@@ -129,6 +136,28 @@ function renderState() {
     ? "Сбор включён для этого домена."
     : "Сбор выключен для этого домена.";
   viewerButton.disabled = false;
+}
+
+function renderCaptureSummary(summary, hasAnyCapture) {
+  if (!summary) {
+    captureReadyBadge.textContent = hasAnyCapture ? "Есть" : "Пусто";
+    captureReadyBadge.className = `badge ${hasAnyCapture ? "badge--active" : "badge--muted"}`;
+    selectionSummaryEl.textContent = hasAnyCapture ? "Захват сохранён, но summary недоступен." : "Элемент ещё не выбран.";
+    selectionBadge.textContent = "DOM";
+    apiCountBadge.textContent = "API 0";
+    captureTimeBadge.textContent = "Нет времени";
+    return;
+  }
+
+  captureReadyBadge.textContent = "Готов";
+  captureReadyBadge.className = "badge badge--active";
+  selectionSummaryEl.textContent = [
+    summary.tagName ? `<${summary.tagName}>` : "DOM",
+    summary.textPreview || "без текста"
+  ].join(" · ");
+  selectionBadge.textContent = summary.tagName ? `<${summary.tagName}>` : "DOM";
+  apiCountBadge.textContent = `API ${summary.apiCount || 0}`;
+  captureTimeBadge.textContent = formatCaptureTime(summary.capturedAt);
 }
 
 function setBusy(isBusy) {
@@ -150,4 +179,20 @@ function simplifyOrigin(origin) {
   } catch {
     return origin;
   }
+}
+
+function formatCaptureTime(value) {
+  if (!value) {
+    return "Нет времени";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Без даты";
+  }
+
+  return date.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }

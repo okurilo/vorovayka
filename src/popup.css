@@ -1,17 +1,16 @@
 :root {
   color-scheme: light;
-  --bg: #f4ede3;
-  --panel: rgba(255, 251, 245, 0.92);
-  --panel-strong: rgba(255, 255, 255, 0.94);
-  --ink: #171717;
-  --muted: #61584f;
-  --line: rgba(120, 96, 68, 0.16);
-  --accent: #1f3a5f;
-  --accent-2: #c4632d;
-  --success: #305b45;
-  --soft-accent: rgba(31, 58, 95, 0.08);
-  --soft-success: rgba(48, 91, 69, 0.12);
-  --shadow: 0 18px 45px rgba(91, 70, 45, 0.13);
+  --bg: #f5f7fb;
+  --panel: rgba(255, 255, 255, 0.96);
+  --panel-strong: #ffffff;
+  --ink: #122033;
+  --muted: #627085;
+  --line: #dbe3ed;
+  --accent: #1f4b7a;
+  --success: #18634b;
+  --soft-accent: rgba(31, 75, 122, 0.08);
+  --soft-success: rgba(24, 99, 75, 0.1);
+  --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
 }
 
 * {
@@ -21,10 +20,7 @@
 body {
   margin: 0;
   width: 368px;
-  background:
-    radial-gradient(circle at top left, rgba(196, 99, 45, 0.2), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(31, 58, 95, 0.14), transparent 26%),
-    linear-gradient(180deg, #fbf6ef 0%, var(--bg) 100%);
+  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
   color: var(--ink);
   font: 13px/1.4 "Avenir Next", "Helvetica Neue", Arial, sans-serif;
   overflow: hidden;
@@ -36,22 +32,22 @@ body {
 
 .popup__header {
   display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: 3px;
+  margin-bottom: 8px;
 }
 
 .popup__eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent-2);
+  margin: 0 0 2px;
+  color: var(--accent);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .popup__title {
   margin: 0;
-  font: 700 22px/0.95 "Georgia", "Iowan Old Style", serif;
+  font: 700 20px/1 "Avenir Next", "Helvetica Neue", Arial, sans-serif;
 }
 
 .popup__status,
@@ -62,25 +58,42 @@ body {
 }
 
 .panel {
-  margin-bottom: 10px;
-  padding: 12px;
+  margin-bottom: 8px;
+  padding: 11px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 14px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
 
 .panel--hero {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.85), rgba(251, 245, 238, 0.95)),
-    var(--panel);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 253, 0.98));
+}
+
+.panel--compact {
+  display: grid;
+  gap: 8px;
+}
+
+.capture-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.summary-line {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .status-line {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .badge {
@@ -90,8 +103,8 @@ body {
   max-width: 100%;
   padding: 5px 9px;
   border-radius: 999px;
-  background: rgba(196, 99, 45, 0.12);
-  color: var(--accent-2);
+  background: rgba(31, 75, 122, 0.08);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 700;
   overflow: hidden;
@@ -138,6 +151,11 @@ body {
   accent-color: var(--success);
 }
 
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -146,21 +164,21 @@ body {
 
 button {
   border: 0;
-  border-radius: 12px;
-  min-height: 42px;
+  border-radius: 11px;
+  min-height: 40px;
   padding: 10px 10px;
   cursor: pointer;
-  background: linear-gradient(135deg, var(--accent), #284f7f);
+  background: linear-gradient(135deg, var(--accent), #2a5a8b);
   color: #fff;
   font: inherit;
   font-weight: 700;
-  box-shadow: 0 10px 24px rgba(31, 58, 95, 0.18);
+  box-shadow: 0 8px 18px rgba(31, 75, 122, 0.16);
   transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
 }
 
 button:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 14px 28px rgba(31, 58, 95, 0.22);
+  box-shadow: 0 12px 20px rgba(31, 75, 122, 0.2);
 }
 
 button:disabled {
@@ -178,13 +196,13 @@ button:disabled {
 .button-secondary {
   background: var(--panel-strong);
   color: var(--accent);
-  border: 1px solid rgba(31, 58, 95, 0.12);
+  border: 1px solid rgba(31, 75, 122, 0.14);
 }
 
 .button-ghost {
   background: transparent;
   color: var(--muted);
-  border: 1px dashed rgba(120, 96, 68, 0.26);
+  border: 1px dashed rgba(98, 112, 133, 0.28);
 }
 
 .message {

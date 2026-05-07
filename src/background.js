@@ -179,7 +179,8 @@ async function getPopupState() {
     isArmed: Boolean(origin && armedOrigins[origin]),
     hasLatestCapture: Boolean(capture[CAPTURE_STORAGE_KEY]),
     hasCopyableCapture: Boolean(capture[COPYABLE_CAPTURE_STORAGE_KEY]),
-    hasAnyCapture: Boolean(capture[CAPTURE_STORAGE_KEY] || capture[COPYABLE_CAPTURE_STORAGE_KEY])
+    hasAnyCapture: Boolean(capture[CAPTURE_STORAGE_KEY] || capture[COPYABLE_CAPTURE_STORAGE_KEY]),
+    captureSummary: capture[COPYABLE_CAPTURE_STORAGE_KEY]?.captureSummary || null
   };
 }
 
