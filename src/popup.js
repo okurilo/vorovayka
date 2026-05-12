@@ -15,7 +15,7 @@ const viewerButton = document.getElementById("viewerButton");
 const clearButton = document.getElementById("clearButton");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
-const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
+const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 
 let popupState = null;
 
@@ -34,7 +34,11 @@ armedToggle.addEventListener("change", async () => {
     return;
   }
 
-  setMessage(armedToggle.checked ? "Сбор включён. Вкладка перезагружается." : "Сбор выключен. Вкладка перезагружается.");
+  setMessage(
+    armedToggle.checked
+      ? "Захват включён. Вкладка перезагрузится."
+      : "Захват выключен. Вкладка перезагрузится."
+  );
   await refreshState();
 });
 
@@ -46,7 +50,7 @@ startButton.addEventListener("click", async () => {
     return;
   }
 
-  setMessage("Выбор элемента запущен.");
+  setMessage("Выбор элемента активирован.");
   window.close();
 });
 
@@ -54,18 +58,16 @@ copyButton.addEventListener("click", async () => {
   const stored = await chrome.storage.local.get([COPYABLE_CAPTURE_STORAGE_KEY, LATEST_CAPTURE_STORAGE_KEY]);
   const capture = await resolveStoredCapture(stored[COPYABLE_CAPTURE_STORAGE_KEY] || stored[LATEST_CAPTURE_STORAGE_KEY], stored);
   if (!capture) {
-    setMessage("Нет сохранённого захвата. Сначала выберите элемент и сохраните capture.");
+    setMessage("Нет сохранённого захвата. Сначала выберите элемент.");
     await refreshState();
     return;
   }
 
   try {
     await navigator.clipboard.writeText(JSON.stringify(capture.captureBundle || capture, null, 2));
-    setMessage(stored[LATEST_CAPTURE_STORAGE_KEY]
-      ? "Захват скопирован."
-      : "Скопирована локальная копия захвата.");
+    setMessage(stored[LATEST_CAPTURE_STORAGE_KEY] ? "Захват скопирован." : "Локальная копия скопирована.");
   } catch {
-    setMessage("Не удалось скопировать.");
+    setMessage("Не удалось скопировать захват.");
   }
 });
 
@@ -99,7 +101,7 @@ async function resolveStoredCapture(value, stored) {
 
 viewerButton.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "OPEN_RECEIVER" });
-  setMessage("Viewer открыт.");
+  setMessage("Рабочая область открыта.");
 });
 
 clearButton.addEventListener("click", async () => {
@@ -129,7 +131,7 @@ function renderState() {
 
   originEl.textContent = popupState?.origin || "Неподдерживаемая вкладка";
   domainBadge.textContent = originText;
-  captureBadge.textContent = isArmed ? "Сбор включён" : "Сбор выключен";
+  captureBadge.textContent = isArmed ? "Захват активен" : "Захват выключен";
   captureBadge.className = `badge ${isArmed ? "badge--active" : "badge--muted"}`;
   armedToggle.checked = isArmed;
   armedToggle.disabled = !isSupported;
@@ -143,7 +145,7 @@ function renderState() {
     if (hasLatestCapture) {
       setMessage("Новый захват готов.");
     } else if (hasCopyableCapture) {
-      setMessage("Локальная копия захвата ещё доступна.");
+      setMessage("Локальная копия ещё доступна.");
     }
   }
 
@@ -154,23 +156,25 @@ function renderState() {
   }
 
   statusEl.textContent = isArmed
-    ? "Сбор включён для этого домена."
-    : "Сбор выключен для этого домена.";
+    ? "Захват включён для этого домена."
+    : "Захват пока не включён для этого домена.";
   viewerButton.disabled = false;
 }
 
 function renderCaptureSummary(summary, hasAnyCapture) {
   if (!summary) {
-    captureReadyBadge.textContent = hasAnyCapture ? "Есть" : "Пусто";
+    captureReadyBadge.textContent = hasAnyCapture ? "Есть данные" : "Пусто";
     captureReadyBadge.className = `badge ${hasAnyCapture ? "badge--active" : "badge--muted"}`;
-    selectionSummaryEl.textContent = hasAnyCapture ? "Захват сохранён, но summary недоступен." : "Элемент ещё не выбран.";
+    selectionSummaryEl.textContent = hasAnyCapture
+      ? "Захват сохранён, но короткое summary недоступно."
+      : "Элемент ещё не выбран.";
     selectionBadge.textContent = "DOM";
     apiCountBadge.textContent = "API 0";
     captureTimeBadge.textContent = "Нет времени";
     return;
   }
 
-  captureReadyBadge.textContent = "Готов";
+  captureReadyBadge.textContent = "Готово";
   captureReadyBadge.className = "badge badge--active";
   selectionSummaryEl.textContent = [
     summary.tagName ? `<${summary.tagName}>` : "DOM",

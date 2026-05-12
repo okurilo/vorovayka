@@ -1,8 +1,8 @@
-{
+﻿{
   "manifest_version": 3,
-  "name": "Vorovayka MVP",
+  "name": "Виджетрон",
   "version": "0.1.0",
-  "description": "MVP Chrome extension for DOM and limited network capture.",
+  "description": "Инструмент для захвата DOM, связанных API и компактного экспорта виджетов.",
   "permissions": [
     "alarms",
     "storage",
@@ -16,7 +16,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Vorovayka controls",
+    "default_title": "Виджетрон",
     "default_popup": "src/popup.html"
   },
   "commands": {
@@ -25,7 +25,7 @@
         "default": "Ctrl+Shift+Y",
         "mac": "Command+Shift+Y"
       },
-      "description": "Start element selection"
+      "description": "Запустить выбор элемента"
     }
   },
   "web_accessible_resources": [
@@ -50,3 +50,4 @@
     }
   ]
 }
+

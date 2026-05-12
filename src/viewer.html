@@ -3,22 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vorovayka Viewer</title>
+    <title>Виджетрон</title>
     <link rel="stylesheet" href="./viewer.css" />
   </head>
   <body>
     <main class="layout">
       <header class="hero">
-        <p class="eyebrow">Vorovayka</p>
-        <h1>Viewer</h1>
-        <p class="lead">DOM preview с матчами полей, выбранные API и экспорт без лишних секций.</p>
+        <div class="hero__brand">
+          <p class="eyebrow">Виджетрон</p>
+          <span class="hero__badge">Рабочая область</span>
+        </div>
+        <h1>Проверка виджета и его данных</h1>
+        <p class="lead">Просматривайте DOM, сверяйте связанные API и собирайте чистый экспорт без лишнего шума.</p>
       </header>
+
       <section id="state" class="card">
         <p>Жду новый или последний сохранённый захват...</p>
       </section>
+
       <section class="card card--debug">
         <details class="debug-panel">
-          <summary>Подробнее: сырой capture JSON</summary>
+          <summary>Технические детали capture</summary>
           <pre id="json"></pre>
         </details>
       </section>

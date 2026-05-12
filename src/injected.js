@@ -1,18 +1,18 @@
-(() => {
-  const EVENT_NAME = document.currentScript?.dataset.eventName || "__VOROVAYKA_NETWORK_EVENT__";
+﻿(() => {
+  const EVENT_NAME = document.currentScript?.dataset.eventName || "__widgetron_NETWORK_EVENT__";
   const MAX_REQUEST_CHARS = 20 * 1024;
   const MAX_RESPONSE_CHARS = 512 * 1024;
   const MAX_BUFFERED_BODY_BYTES = 512 * 1024;
   const MAX_STACK_CHARS = 8 * 1024;
-  const FETCH_WRAPPER_MARK = "__vorovaykaFetchWrapper__";
+  const FETCH_WRAPPER_MARK = "__widgetronFetchWrapper__";
   const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|cookie|session|csrf|xsrf|api[-_]?key|jwt)/i;
   const encoder = new TextEncoder();
   let seq = 0;
 
-  if (window.__vorovaykaInjected) {
+  if (window.__widgetronInjected) {
     return;
   }
-  window.__vorovaykaInjected = true;
+  window.__widgetronInjected = true;
 
   const upstreamFetch = window.fetch;
   const originalXhrOpen = XMLHttpRequest.prototype.open;
@@ -20,7 +20,7 @@
   const originalXhrSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
   if (typeof upstreamFetch === "function" && !upstreamFetch[FETCH_WRAPPER_MARK]) {
-    const composedFetch = async function vorovaykaFetchWrapper(input, init) {
+    const composedFetch = async function widgetronFetchWrapper(input, init) {
       const request = input instanceof Request ? input : null;
       const url = request ? request.url : String(input);
       const method = String(init?.method || request?.method || "GET").toUpperCase();
@@ -56,7 +56,7 @@
   }
 
   XMLHttpRequest.prototype.open = function patchedOpen(method, url) {
-    this.__vorovaykaMeta = {
+    this.__widgetronMeta = {
       method: String(method || "GET").toUpperCase(),
       url: String(url || ""),
       timestamp: 0,
@@ -66,19 +66,19 @@
   };
 
   XMLHttpRequest.prototype.setRequestHeader = function patchedSetRequestHeader(name, value) {
-    if (this.__vorovaykaMeta) {
-      this.__vorovaykaMeta.requestHeaders[name] = value;
+    if (this.__widgetronMeta) {
+      this.__widgetronMeta.requestHeaders[name] = value;
     }
     return originalXhrSetRequestHeader.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.send = function patchedSend() {
-    if (this.__vorovaykaMeta) {
-      this.__vorovaykaMeta.timestamp = Date.now();
-      this.__vorovaykaMeta.requestBody = serializeRequestBody(arguments[0]);
-      this.__vorovaykaMeta.initiatorStack = captureStack();
+    if (this.__widgetronMeta) {
+      this.__widgetronMeta.timestamp = Date.now();
+      this.__widgetronMeta.requestBody = serializeRequestBody(arguments[0]);
+      this.__widgetronMeta.initiatorStack = captureStack();
       this.addEventListener("loadend", () => {
-        const meta = this.__vorovaykaMeta || {};
+        const meta = this.__widgetronMeta || {};
         emit(buildXhrPayload(this, meta));
       }, { once: true });
     }
@@ -351,3 +351,5 @@
     return `${value.slice(0, limit)}\n...[truncated]`;
   }
 })();
+
+

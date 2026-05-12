@@ -1,10 +1,10 @@
-const RECEIVER_PATH = "src/viewer.html";
+﻿const RECEIVER_PATH = "src/viewer.html";
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_EXPIRY_ALARM = "latestCaptureExpiry";
 const CAPTURE_TTL_MS = 5 * 60 * 1000;
-const FULL_CAPTURE_DB_NAME = "vorovayka-full-capture";
+const FULL_CAPTURE_DB_NAME = "widgetron-full-capture";
 const FULL_CAPTURE_STORE_NAME = "captures";
 const FULL_CAPTURE_KEY = "active";
 
@@ -167,8 +167,8 @@ async function syncActionState(tabId, url) {
   await chrome.action.setTitle({
     tabId,
     title: isArmed
-      ? "Capture armed for this domain. Open popup to control capture."
-      : "Capture disabled for this domain. Open popup to arm and reload."
+      ? "Виджетрон: захват включён для этого домена. Откройте popup для управления."
+      : "Виджетрон: захват выключен. Откройте popup, чтобы включить режим и перезагрузить вкладку."
   });
 }
 
@@ -309,3 +309,5 @@ async function getFullCapture() {
 async function clearFullCapture() {
   await withFullCaptureStore("readwrite", (store) => requestToPromise(store.delete(FULL_CAPTURE_KEY))).catch(() => null);
 }
+
+

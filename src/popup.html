@@ -3,38 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vorovayka Controls</title>
+    <title>Виджетрон</title>
     <link rel="stylesheet" href="./popup.css" />
   </head>
   <body>
     <main class="popup">
-      <header class="popup__header">
-        <p class="popup__eyebrow">Vorovayka</p>
-        <h1 class="popup__title">Capture</h1>
+      <header class="popup__hero">
+        <div class="popup__brand">
+          <p class="popup__eyebrow">Виджетрон</p>
+          <span class="popup__dot" aria-hidden="true"></span>
+          <span class="popup__caption">Рабочий режим</span>
+        </div>
+        <h1 class="popup__title">Управление захватом</h1>
         <p id="status" class="popup__status">Проверяю активную вкладку...</p>
       </header>
 
       <section class="panel panel--hero">
-        <div class="status-line">
-          <span id="domainBadge" class="badge">Домен</span>
-          <span id="captureBadge" class="badge badge--muted">Сбор выключен</span>
+        <div class="panel__head">
+          <div>
+            <p class="panel__eyebrow">Текущий домен</p>
+            <strong id="domainBadge" class="panel__title">Домен</strong>
+          </div>
+          <span id="captureBadge" class="badge badge--muted">Захват выключен</span>
         </div>
+
         <label class="toggle">
-          <span>
-            <strong>Сбор запросов</strong>
+          <span class="toggle__copy">
+            <strong>Собирать запросы</strong>
             <small id="origin">Текущий домен</small>
           </span>
           <input id="armedToggle" type="checkbox" />
         </label>
-        <p class="hint">После переключения вкладка перезагрузится.</p>
+
+        <p class="hint">После переключения вкладка перезагрузится, чтобы начать ранний захват запросов.</p>
       </section>
 
-      <section class="panel panel--compact">
+      <section class="panel panel--summary">
         <div class="capture-head">
-          <strong>Последний захват</strong>
+          <div>
+            <p class="panel__eyebrow">Последний результат</p>
+            <strong class="panel__title">Сохранённый захват</strong>
+          </div>
           <span id="captureReadyBadge" class="badge badge--muted">Пусто</span>
         </div>
+
         <p id="selectionSummary" class="summary-line">Элемент ещё не выбран.</p>
+
         <div class="status-line">
           <span id="selectionBadge" class="badge badge--muted">DOM</span>
           <span id="apiCountBadge" class="badge badge--muted">API 0</span>
@@ -42,11 +56,11 @@
         </div>
       </section>
 
-      <section class="panel actions">
-        <button id="startButton" type="button">Выбрать элемент</button>
-        <button id="copyButton" type="button">Скопировать захват</button>
-        <button id="viewerButton" type="button" class="button-secondary">Открыть viewer</button>
-        <button id="clearButton" type="button" class="button-ghost">Очистить</button>
+      <section class="actions">
+        <button id="startButton" type="button" class="button-primary">Выбрать элемент</button>
+        <button id="viewerButton" type="button" class="button-secondary">Открыть рабочую область</button>
+        <button id="copyButton" type="button" class="button-tertiary">Скопировать захват</button>
+        <button id="clearButton" type="button" class="button-ghost">Очистить данные</button>
       </section>
 
       <p id="message" class="message" aria-live="polite"></p>

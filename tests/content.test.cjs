@@ -22,6 +22,9 @@ function createContentExports() {
       "normalizeNetworkRecord",
       "sanitizeHeaders",
       "buildResponsePreview",
+      "formatCandidateMatchPercent",
+      "formatCandidateRequestTitle",
+      "formatCandidateRequestSummary",
       "truncateText"
     ],
     replacements: [["void initializeCapture();", ""]],
@@ -98,5 +101,18 @@ describe("content capture helpers", () => {
     expect(content.buildResponsePreview('[{"id":1,"name":"Ada"}]', "application/json")).toBe("array[1] · id, name");
     expect(content.buildResponsePreview('{"id":1,"name":"Ada"}', "application/json")).toContain("object:");
     expect(content.buildResponsePreview("plain text response", "text/plain")).toBe("plain text response");
+  });
+
+  it("formatCandidateMatchPercent maps score to bounded percentage", () => {
+    expect(content.formatCandidateMatchPercent(26)).toBe(100);
+    expect(content.formatCandidateMatchPercent(13)).toBe(50);
+    expect(content.formatCandidateMatchPercent(-5)).toBe(0);
+    expect(content.formatCandidateMatchPercent(40)).toBe(100);
+  });
+
+  it("formats long request urls into compact title and useful param summary", () => {
+    const url = "https://www.youtube.com/api/timedtext?v=inQuNn3eggk&ei=hokDapu-ILbN-_UPw7D76A8&hl=ru&fmt=json3&kind=asr&c=WEB";
+    expect(content.formatCandidateRequestTitle("get", url)).toBe("GET www.youtube.com/api/timedtext");
+    expect(content.formatCandidateRequestSummary(url)).toBe("Параметры: v=inQuNn3eggk · hl=ru · fmt=json3 · kind=asr · ещё 2");
   });
 });
