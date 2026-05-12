@@ -1,4 +1,4 @@
-const { loadScript } = require("./load-script.cjs");
+﻿const { loadScript } = require("./load-script.cjs");
 
 function createViewerExports() {
   return loadScript("src/viewer.js", {
@@ -64,7 +64,7 @@ describe("viewer export helpers", () => {
 
   it("buildExportPayload respects selected scope", () => {
     const bundle = {
-      specVersion: "vorovayka.capture-bundle.v1",
+      specVersion: "widgetron.capture-bundle.v1",
       capturedAt: "2026-05-08T00:00:00.000Z",
       page: { url: "https://site.test", title: "Demo" },
       dom: {
@@ -95,14 +95,14 @@ describe("viewer export helpers", () => {
     };
 
     expect(viewer.buildExportPayload(bundle, "api", new Set(["api-2"]))).toEqual({
-      specVersion: "vorovayka.capture-bundle.v1",
+      specVersion: "widgetron.capture-bundle.v1",
       capturedAt: "2026-05-08T00:00:00.000Z",
       page: { url: "https://site.test", title: "Demo" },
       api: [bundle.api[1]]
     });
 
     expect(viewer.buildExportPayload(bundle, "dom-clean", new Set())).toEqual({
-      specVersion: "vorovayka.capture-bundle.v1",
+      specVersion: "widgetron.capture-bundle.v1",
       capturedAt: "2026-05-08T00:00:00.000Z",
       page: { url: "https://site.test", title: "Demo" },
       dom: {
@@ -114,7 +114,7 @@ describe("viewer export helpers", () => {
     });
 
     expect(viewer.buildExportPayload(bundle, "all", new Set(["api-1"]))).toEqual({
-      specVersion: "vorovayka.capture-bundle.v1",
+      specVersion: "widgetron.capture-bundle.v1",
       capturedAt: "2026-05-08T00:00:00.000Z",
       page: { url: "https://site.test", title: "Demo" },
       dom: {
@@ -160,3 +160,5 @@ describe("viewer export helpers", () => {
     });
   });
 });
+
+

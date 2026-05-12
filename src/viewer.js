@@ -1,9 +1,9 @@
-const stateEl = document.getElementById("state");
+﻿const stateEl = document.getElementById("state");
 const jsonEl = document.getElementById("json");
 const rawJsonPanelEl = document.querySelector(".debug-panel");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
-const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
+const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
@@ -115,7 +115,7 @@ function normalizeCaptureBundle(capture) {
   }
 
   return {
-    specVersion: "vorovayka.capture-bundle.v1",
+    specVersion: "widgetron.capture-bundle.v1",
     capturedAt: capture.createdAt || "",
     page: {
       title: capture.page?.title || "",
@@ -160,8 +160,8 @@ function renderOverview(bundle, recipe) {
   header.className = "section-head";
   header.innerHTML = `
     <div>
-      <h2>DOM preview</h2>
-      <p class="section-copy">Проверьте, что выбран именно тот узел.</p>
+      <h2>Предпросмотр DOM</h2>
+      <p class="section-copy">Проверьте, что выбран именно тот блок, который хотите разобрать и экспортировать.</p>
     </div>
     <span class="pill">${escapeHtml(formatCapturedAt(bundle.capturedAt))}</span>
   `;
@@ -188,7 +188,7 @@ function renderOverview(bundle, recipe) {
     ${renderMetric("Селектор", bundle.dom?.selector || "—")}
     ${renderMetric("Текст", bundle.dom?.textPreview || "—")}
     ${renderMetric("API", String(bundle.api?.length || 0))}
-    ${renderMetric("Матчи", String((recipe.bindings || recipe.dataRequirements || []).length || 0))}
+    ${renderMetric("Связи", String((recipe.bindings || recipe.dataRequirements || []).length || 0))}
   `;
 
   body.append(previewWrap, meta);
@@ -200,7 +200,7 @@ function renderCaptureWarnings(capture) {
   const warnings = [];
 
   if (capture?.storageMeta?.fullCaptureAvailable === false) {
-    warnings.push("Полный capture недоступен, viewer показывает compact fallback из storage.");
+    warnings.push("Полный capture недоступен, поэтому Виджетрон показывает компактный fallback из storage.");
   }
 
   const hasTruncatedBodies = Boolean(
@@ -212,7 +212,7 @@ function renderCaptureWarnings(capture) {
     ))
   );
   if (hasTruncatedBodies) {
-    warnings.push("Часть request/response body была обрезана на этапе захвата или fallback-хранения.");
+    warnings.push("Часть request/response body была урезана на этапе захвата или fallback-хранения.");
   }
 
   const hasTruncatedDom = Boolean(
@@ -221,7 +221,7 @@ function renderCaptureWarnings(capture) {
     String(capture?.dom?.previewHTML || "").includes("...[truncated]")
   );
   if (hasTruncatedDom) {
-    warnings.push("DOM snapshot сохранён не полностью; export может отличаться от исходного узла.");
+    warnings.push("DOM snapshot сохранён не полностью, поэтому итоговый экспорт может отличаться от исходного узла.");
   }
 
   if (!warnings.length) {
@@ -249,8 +249,8 @@ function renderApiSection(bundle) {
   header.className = "section-head";
   header.innerHTML = `
     <div>
-      <h2>Выбранные API</h2>
-      <p class="section-copy">Это запросы, которые были отмечены на предыдущем шаге.</p>
+      <h2>Подключённые API</h2>
+      <p class="section-copy">Это запросы, которые участвуют в объяснении выбранного виджета и его данных.</p>
     </div>
     <span class="count-badge">${escapeHtml(String(bundle.api?.length || 0))}</span>
   `;
@@ -260,7 +260,7 @@ function renderApiSection(bundle) {
   if (!bundle.api?.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "API не выбраны. Доступен только DOM.";
+    empty.textContent = "API ещё не выбраны. Сейчас доступен только DOM.";
     section.appendChild(empty);
     return section;
   }
@@ -277,9 +277,9 @@ function renderApiSection(bundle) {
           <input type="checkbox" class="api-select" data-api-id="${escapeHtml(item.id || item.requestId || String(index))}" checked />
           <span>${escapeHtml(item.method || "GET")} ${escapeHtml(shortenUrl(item.url || ""))}</span>
         </label>
-        <span class="api-status">Status ${escapeHtml(String(item.status || "?"))}</span>
+        <span class="api-status">Статус ${escapeHtml(String(item.status || "?"))}</span>
       </div>
-      <p class="api-copy">${escapeHtml(item.responsePreview || "Preview ответа недоступен.")}</p>
+      <p class="api-copy">${escapeHtml(item.responsePreview || "Короткое превью ответа недоступно.")}</p>
       <details class="api-details">
         <summary>Тело и метаданные</summary>
         <div class="api-detail-grid">
@@ -305,7 +305,7 @@ function renderExportSection(bundle) {
   header.innerHTML = `
     <div>
       <h2>Экспорт</h2>
-      <p class="section-copy">Выберите, что именно нужно выгрузить и скопировать.</p>
+      <p class="section-copy">Соберите нужный формат выгрузки и сразу проверьте итоговый payload.</p>
     </div>
   `;
   section.appendChild(header);
@@ -367,7 +367,7 @@ function buildExportPayload(bundle, scope, selectedApiIds) {
   });
 
   const payload = {
-    specVersion: bundle.specVersion || "vorovayka.capture-bundle.v1",
+    specVersion: bundle.specVersion || "widgetron.capture-bundle.v1",
     capturedAt: bundle.capturedAt || "",
     page: bundle.page || {}
   };
@@ -545,7 +545,7 @@ function formatStepTiming(step) {
   if (Number.isFinite(Number(step.relativeToInteractionMs))) {
     parts.push(`${step.relativeToInteractionMs} ms от выбора`);
   }
-  return parts.join(" · ");
+  return parts.join(" В· ");
 }
 
 function renderElementPreview(dom = {}, recipe = {}) {
@@ -654,7 +654,7 @@ function buildPreviewHighlightDom(html, bindings) {
       const mark = document.createElement("mark");
       mark.className = "dom-match-mark";
       mark.dataset.matchIndex = String(matched.previewIndex);
-      mark.title = `${matched.responsePath || matched.path || "JSON path"} • ${shortEndpoint(matched)}`;
+      mark.title = `${matched.responsePath || matched.path || "JSON path"} вЂў ${shortEndpoint(matched)}`;
       mark.textContent = exact;
       fragment.appendChild(mark);
 
@@ -680,7 +680,7 @@ function renderPreviewMatchLegend(bindings) {
 
   const title = document.createElement("div");
   title.className = "dom-match-legend__title";
-  title.textContent = "Матчи в DOM preview";
+  title.textContent = "Связи в DOM preview";
   legend.appendChild(title);
 
   bindings.forEach((binding) => {
@@ -875,3 +875,5 @@ function escapeHtml(value) {
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&#39;");
 }
+
+

@@ -1,8 +1,8 @@
-const NETWORK_EVENT = "__VOROVAYKA_NETWORK_EVENT__";
+﻿const NETWORK_EVENT = "__widgetron_NETWORK_EVENT__";
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
-const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
+const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 const FULL_CAPTURE_KEY = "active";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
@@ -49,7 +49,7 @@ const STORAGE_PROFILES = {
 };
 const POST_CLICK_WINDOW_MS = 1500;
 const DOM_RENDER_EVIDENCE_WINDOW_MS = 5000;
-const UI_ROOT_ID = "vorovayka-root";
+const UI_ROOT_ID = "widgetron-root";
 const PREVIEW_STYLE_PROPS = [
   "display",
   "box-sizing",
@@ -160,7 +160,7 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "START_CAPTURE") {
     if (!captureEnabled) {
       ensureUi();
-      renderHint("Сбор сети на этом домене выключен. Включите его в popup.", {
+      renderHint("Захват сети на этом домене выключен. Включите его в popup.", {
         duration: 3200,
         destroyWhenHidden: true
       });
@@ -1202,29 +1202,29 @@ function showSelectionDialog(payload) {
   closeModal();
 
   modal = document.createElement("div");
-  modal.className = "vorovayka-modal";
+  modal.className = "widgetron-modal";
 
   const heading = document.createElement("div");
-  heading.className = "vorovayka-modal__heading";
-  heading.textContent = "Выберите запросы для рецепта элемента";
+  heading.className = "widgetron-modal__heading";
+  heading.textContent = "Выберите запросы для рецепта виджета";
 
   const summary = document.createElement("div");
-  summary.className = "vorovayka-modal__summary";
-  summary.textContent = `${payload.networkCandidates.length} кандидатов для проверки. Отмечены лучшие по score, но список расширен.`;
+  summary.className = "widgetron-modal__summary";
+  summary.textContent = `${payload.networkCandidates.length} кандидатов для проверки. Лучшие по score уже отмечены, но список можно уточнить вручную.`;
 
   const list = document.createElement("div");
-  list.className = "vorovayka-modal__list";
+  list.className = "widgetron-modal__list";
 
   if (payload.networkCandidates.length === 0) {
     const empty = document.createElement("div");
-    empty.className = "vorovayka-modal__empty";
+    empty.className = "widgetron-modal__empty";
     empty.textContent = "Подходящих JSON/text запросов не найдено. Можно сохранить только DOM и HTML-превью.";
     list.appendChild(empty);
   }
 
   payload.networkCandidates.forEach((candidate, index) => {
     const label = document.createElement("label");
-    label.className = "vorovayka-modal__item";
+    label.className = "widgetron-modal__item";
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -1232,11 +1232,11 @@ function showSelectionDialog(payload) {
     checkbox.dataset.index = String(index);
 
     const meta = document.createElement("div");
-    meta.className = "vorovayka-modal__meta";
+    meta.className = "widgetron-modal__meta";
     meta.innerHTML = [
       `<strong>${escapeHtml(candidate.method)} ${escapeHtml(shortenUrl(candidate.url))}</strong>`,
-      `<span>Status ${candidate.status || "?"} · score ${candidate.score} · ${escapeHtml(candidate.contentType || "unknown")}</span>`,
-      `<small>${escapeHtml(candidate.responsePreview || "Preview ответа недоступен.")}</small>`
+      `<span>Статус ${candidate.status || "?"} · score ${candidate.score} · ${escapeHtml(candidate.contentType || "unknown")}</span>`,
+      `<small>${escapeHtml(candidate.responsePreview || "Короткое превью ответа недоступно.")}</small>`
     ].join("");
 
     label.appendChild(checkbox);
@@ -1245,13 +1245,13 @@ function showSelectionDialog(payload) {
   });
 
   const actions = document.createElement("div");
-  actions.className = "vorovayka-modal__actions";
+  actions.className = "widgetron-modal__actions";
   const progress = document.createElement("div");
-  progress.className = "vorovayka-modal__progress";
+  progress.className = "widgetron-modal__progress";
   progress.hidden = true;
 
   const openReceiverButton = document.createElement("button");
-  openReceiverButton.textContent = "Открыть viewer";
+  openReceiverButton.textContent = "Открыть рабочую область";
   openReceiverButton.addEventListener("click", async () => {
     setModalBusy(actions, progress, "Собираю cloneSpec...", 12);
     try {
@@ -1259,19 +1259,19 @@ function showSelectionDialog(payload) {
         setModalBusy(actions, progress, text, percent);
       });
       await chrome.runtime.sendMessage({ type: "OPEN_RECEIVER" });
-      renderHint("Viewer открыт.", {
+      renderHint("Рабочая область открыта.", {
         duration: 2200,
         destroyWhenHidden: true
       });
       closeModal();
     } catch (error) {
       console.warn("Failed to open viewer", error);
-      setModalBusy(actions, progress, "Не удалось открыть viewer.", 100, false);
+      setModalBusy(actions, progress, "Не удалось открыть рабочую область.", 100, false);
     }
   });
 
   const saveButton = document.createElement("button");
-  saveButton.textContent = "Сохранить capture";
+  saveButton.textContent = "Сохранить захват";
   saveButton.addEventListener("click", async () => {
     setModalBusy(actions, progress, "Собираю cloneSpec...", 12);
     try {
@@ -1285,7 +1285,7 @@ function showSelectionDialog(payload) {
       closeModal();
     } catch (error) {
       console.warn("Failed to persist capture", error);
-      setModalBusy(actions, progress, "Не удалось сохранить capture.", 100, false);
+      setModalBusy(actions, progress, "Не удалось сохранить захват.", 100, false);
     }
   });
 
@@ -1305,7 +1305,7 @@ function setModalBusy(actions, progress, text, percent = 0, isBusy = true) {
   progress.hidden = false;
   progress.innerHTML = `
     <span>${escapeHtml(text)}</span>
-    <div class="vorovayka-progress"><i style="width: ${Math.max(0, Math.min(100, percent))}%"></i></div>
+    <div class="widgetron-progress"><i style="width: ${Math.max(0, Math.min(100, percent))}%"></i></div>
   `;
   actions.querySelectorAll("button").forEach((button) => {
     button.disabled = isBusy;
@@ -1509,7 +1509,7 @@ function compactCaptureBundle(bundle, limits) {
 function buildCaptureBundle(capture) {
   const dom = capture?.dom || {};
   return {
-    specVersion: "vorovayka.capture-bundle.v1",
+    specVersion: "widgetron.capture-bundle.v1",
     capturedAt: capture?.createdAt || "",
     page: {
       title: capture?.page?.title || "",
@@ -1735,7 +1735,7 @@ async function buildElementRecipe(dom, network, interaction, mutationTrace = [],
     analysisDiagnostics
   });
 
-  reportProgress("Формирую cloneSpec для viewer...", 86);
+  reportProgress("Формирую cloneSpec для рабочей области...", 86);
   await yieldToBrowser();
 
   return {
@@ -1954,7 +1954,7 @@ function buildEvidenceTimeline({ interaction, apiSequence, apiDependencies, bind
 
   (apiSequence || []).forEach((step) => {
     const matchedCount = step.response?.matchedFields?.length || step.bindings?.length || 0;
-    const duplicateText = step.duplicateCount > 1 ? ` · свернуто ${step.duplicateCount} вызова` : "";
+    const duplicateText = step.duplicateCount > 1 ? ` · свёрнуто ${step.duplicateCount} вызова` : "";
     events.push({
       id: `timeline-api-${step.requestId || step.step}`,
       type: matchedCount > 0 ? "api-match" : "api-call",
@@ -1977,7 +1977,7 @@ function buildEvidenceTimeline({ interaction, apiSequence, apiDependencies, bind
       requestId: binding.requestId,
       bindingId: binding.id || binding.bindingId || "",
       step: step?.step || binding.step || null,
-      label: `${binding.responsePath || binding.path || "JSON path"} → ${binding.domValue || binding.value || ""}`,
+      label: `${binding.responsePath || binding.path || "JSON path"} в†’ ${binding.domValue || binding.value || ""}`,
       detail: `${binding.responseValue || ""}`,
       confidence: binding.confidence || null,
       reasons: binding.reasons || []
@@ -1992,7 +1992,7 @@ function buildEvidenceTimeline({ interaction, apiSequence, apiDependencies, bind
       timestamp: targetStep?.firstTimestamp || targetStep?.timestamp || null,
       requestId: edge.toRequestId,
       step: targetStep?.step || edge.toStep || null,
-      label: `${edge.fromLabel || edge.fromRequestId || "API"} → ${edge.toLabel || edge.toRequestId || "API"}`,
+      label: `${edge.fromLabel || edge.fromRequestId || "API"} в†’ ${edge.toLabel || edge.toRequestId || "API"}`,
       detail: `${edge.source?.path || "response"} переиспользовано в ${formatRequestDependencyTarget(edge.target)}`,
       confidence: edge.confidence || null,
       value: truncateText(String(edge.value || ""), 160)
@@ -2116,7 +2116,7 @@ function buildAnalysisDiagnostics(domFacts, responseFacts, bindings, requests, m
       code: "no-selected-api",
       title: "API не выбран",
       message: "Для рецепта не выбран ни один захваченный API-запрос.",
-      hints: ["Включить сбор для домена до перезагрузки страницы.", "Оставить отмеченными API-кандидаты, которые могли отрисовать виджет."]
+      hints: ["Включите сбор для домена до перезагрузки страницы.", "Оставьте отмеченными API-кандидаты, которые могли отрисовать виджет."]
     });
   } else if (!responseFacts.length) {
     add({
@@ -2155,7 +2155,7 @@ function buildAnalysisDiagnostics(domFacts, responseFacts, bindings, requests, m
         severity: "warning",
         code: "value-not-found-in-selected-api",
         title: "Значение не найдено в выбранных API",
-        message: "В выбранных ответах API нет значения, которое объясняет этот текст/число из DOM.",
+        message: "В выбранных ответах API нет значения, которое объясняет этот текст или число из DOM.",
         value: fact.value,
         kind: fact.kind,
         selector: fact.selector,
@@ -2284,7 +2284,7 @@ function buildSequenceSummary(apiDependencies) {
   return (apiDependencies || []).map((edge, index) => ({
     ...edge,
     step: index + 1,
-    label: `${edge.source?.path || edge.sourcePath || "response"} → ${formatRequestDependencyTarget(edge.target)}`
+    label: `${edge.source?.path || edge.sourcePath || "response"} в†’ ${formatRequestDependencyTarget(edge.target)}`
   }));
 }
 
@@ -3416,27 +3416,30 @@ function ensureUi() {
         all: initial;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      #${UI_ROOT_ID} .vorovayka-highlight {
+      #${UI_ROOT_ID} .widgetron-highlight {
         position: fixed;
-        border: 2px solid #ff7a18;
-        background: rgba(255, 122, 24, 0.12);
+        border: 2px solid #2a6fd5;
+        border-radius: 18px;
+        background: rgba(42, 111, 213, 0.14);
+        box-shadow: 0 0 0 1px rgba(42, 111, 213, 0.08), 0 18px 30px rgba(42, 111, 213, 0.18);
         pointer-events: none;
         z-index: 2147483645;
       }
-      #${UI_ROOT_ID} .vorovayka-hint {
+      #${UI_ROOT_ID} .widgetron-hint {
         position: fixed;
         top: 16px;
         right: 16px;
         max-width: 360px;
-        padding: 10px 12px;
-        border-radius: 8px;
-        background: rgba(15, 23, 42, 0.96);
-        color: #fff;
+        padding: 12px 14px;
+        border: 1px solid rgba(117, 158, 211, 0.28);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.97);
+        color: #173252;
         font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         z-index: 2147483646;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+        box-shadow: 0 18px 40px rgba(34, 86, 146, 0.18);
       }
-      #${UI_ROOT_ID} .vorovayka-modal {
+      #${UI_ROOT_ID} .widgetron-modal {
         position: fixed;
         right: 16px;
         bottom: 16px;
@@ -3444,106 +3447,109 @@ function ensureUi() {
         max-width: calc(100vw - 32px);
         max-height: 70vh;
         overflow: auto;
-        padding: 14px;
-        border: 1px solid #dbe2ea;
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.98);
-        color: #0f172a;
+        padding: 16px;
+        border: 1px solid rgba(117, 158, 211, 0.24);
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.97));
+        color: #173252;
         font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+        box-shadow: 0 28px 60px rgba(34, 86, 146, 0.24);
         z-index: 2147483647;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__heading {
-        font-size: 14px;
-        font-weight: 700;
-        margin-bottom: 4px;
+      #${UI_ROOT_ID} .widgetron-modal__heading {
+        font-size: 15px;
+        font-weight: 800;
+        margin-bottom: 6px;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__summary,
-      #${UI_ROOT_ID} .vorovayka-modal__empty {
-        color: #64748b;
-        margin-bottom: 10px;
+      #${UI_ROOT_ID} .widgetron-modal__summary,
+      #${UI_ROOT_ID} .widgetron-modal__empty {
+        color: #66809d;
+        margin-bottom: 12px;
         font-size: 12px;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__progress {
+      #${UI_ROOT_ID} .widgetron-modal__progress {
         display: grid;
         gap: 8px;
         margin: 12px 0 0;
-        color: #475569;
+        color: #4c6b91;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__progress[hidden] {
+      #${UI_ROOT_ID} .widgetron-modal__progress[hidden] {
         display: none;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__list {
+      #${UI_ROOT_ID} .widgetron-modal__list {
         display: grid;
         gap: 6px;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__item {
+      #${UI_ROOT_ID} .widgetron-modal__item {
         display: grid;
         grid-template-columns: 18px 1fr;
-        gap: 8px;
+        gap: 10px;
         align-items: start;
-        padding: 9px 10px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #fcfdff;
+        padding: 11px 12px;
+        border: 1px solid rgba(117, 158, 211, 0.22);
+        border-radius: 16px;
+        background: rgba(248, 251, 255, 0.96);
       }
-      #${UI_ROOT_ID} .vorovayka-modal__meta strong,
-      #${UI_ROOT_ID} .vorovayka-modal__meta span,
-      #${UI_ROOT_ID} .vorovayka-modal__meta small {
+      #${UI_ROOT_ID} .widgetron-modal__meta strong,
+      #${UI_ROOT_ID} .widgetron-modal__meta span,
+      #${UI_ROOT_ID} .widgetron-modal__meta small {
         display: block;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__meta span {
-        color: #64748b;
+      #${UI_ROOT_ID} .widgetron-modal__meta span {
+        color: #66809d;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__meta small {
+      #${UI_ROOT_ID} .widgetron-modal__meta small {
         margin-top: 4px;
-        color: #334155;
+        color: #2d496b;
         font-size: 12px;
         line-height: 1.35;
       }
-      #${UI_ROOT_ID} .vorovayka-modal__actions {
+      #${UI_ROOT_ID} .widgetron-modal__actions {
         display: flex;
         gap: 8px;
         margin-top: 12px;
       }
       #${UI_ROOT_ID} button {
         border: 0;
-        border-radius: 10px;
-        padding: 9px 12px;
+        border-radius: 14px;
+        padding: 10px 14px;
         cursor: pointer;
-        background: #0f172a;
+        background: linear-gradient(135deg, #2a6fd5, #1d5cc0);
         color: #fff;
         font: inherit;
+        font-weight: 700;
+        box-shadow: 0 14px 26px rgba(42, 111, 213, 0.22);
       }
       #${UI_ROOT_ID} button:disabled {
         cursor: wait;
         opacity: 0.62;
       }
       #${UI_ROOT_ID} button:last-child {
-        background: #e2e8f0;
-        color: #0f172a;
+        background: rgba(230, 239, 250, 0.96);
+        color: #173252;
+        box-shadow: none;
       }
-      #${UI_ROOT_ID} .vorovayka-progress {
+      #${UI_ROOT_ID} .widgetron-progress {
         width: 100%;
         height: 6px;
         overflow: hidden;
         border-radius: 999px;
-        background: #e2e8f0;
+        background: rgba(117, 158, 211, 0.2);
       }
-      #${UI_ROOT_ID} .vorovayka-progress i {
+      #${UI_ROOT_ID} .widgetron-progress i {
         display: block;
         height: 100%;
         border-radius: inherit;
-        background: #0f766e;
+        background: linear-gradient(135deg, #2a6fd5, #59a4ff);
         transition: width 160ms ease;
       }
     </style>
-    <div class="vorovayka-hint" hidden></div>
-    <div class="vorovayka-highlight" hidden></div>
+    <div class="widgetron-hint" hidden></div>
+    <div class="widgetron-highlight" hidden></div>
   `;
 
   document.documentElement.appendChild(uiRoot);
-  highlightBox = uiRoot.querySelector(".vorovayka-highlight");
+  highlightBox = uiRoot.querySelector(".widgetron-highlight");
 }
 
 function destroyUi() {
@@ -3559,7 +3565,7 @@ function destroyUi() {
 
 function renderHint(text, options = {}) {
   ensureUi();
-  const hint = uiRoot.querySelector(".vorovayka-hint");
+  const hint = uiRoot.querySelector(".widgetron-hint");
   if (hint) {
     clearTimeout(hintTimer);
     hintTimer = null;
@@ -3579,7 +3585,7 @@ function renderHint(text, options = {}) {
 
 function renderProgress(text, percent = 0) {
   ensureUi();
-  const hint = uiRoot.querySelector(".vorovayka-hint");
+  const hint = uiRoot.querySelector(".widgetron-hint");
   if (!hint) {
     return;
   }
@@ -3589,7 +3595,7 @@ function renderProgress(text, percent = 0) {
   hint.hidden = false;
   hint.innerHTML = `
     <div>${escapeHtml(text)}</div>
-    <div class="vorovayka-progress"><i style="width: ${Math.max(0, Math.min(100, percent))}%"></i></div>
+    <div class="widgetron-progress"><i style="width: ${Math.max(0, Math.min(100, percent))}%"></i></div>
   `;
 }
 
@@ -3598,7 +3604,7 @@ function hideHint() {
     return;
   }
 
-  const hint = uiRoot.querySelector(".vorovayka-hint");
+  const hint = uiRoot.querySelector(".widgetron-hint");
   if (hint) {
     hint.hidden = true;
     hint.textContent = "";
@@ -3744,3 +3750,5 @@ function createChannelToken() {
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16)).join("");
 }
+
+

@@ -1,16 +1,21 @@
 :root {
   color-scheme: light;
-  --bg: #f5f7fb;
-  --panel: rgba(255, 255, 255, 0.96);
+  --bg: #eef4ff;
+  --bg-soft: #f8fbff;
+  --panel: rgba(255, 255, 255, 0.94);
   --panel-strong: #ffffff;
-  --ink: #122033;
-  --muted: #627085;
-  --line: #dbe3ed;
-  --accent: #1f4b7a;
-  --success: #18634b;
-  --soft-accent: rgba(31, 75, 122, 0.08);
-  --soft-success: rgba(24, 99, 75, 0.1);
-  --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+  --ink: #15304f;
+  --muted: #67809d;
+  --line: rgba(127, 163, 211, 0.24);
+  --line-strong: rgba(85, 135, 204, 0.28);
+  --accent: #2b6fd6;
+  --accent-strong: #1f5fc4;
+  --accent-soft: rgba(43, 111, 214, 0.1);
+  --accent-soft-strong: rgba(43, 111, 214, 0.16);
+  --success: #1a8b68;
+  --success-soft: rgba(26, 139, 104, 0.12);
+  --shadow-soft: 0 14px 38px rgba(42, 87, 145, 0.12);
+  --shadow-button: 0 14px 28px rgba(43, 111, 214, 0.24);
 }
 
 * {
@@ -19,114 +24,164 @@
 
 body {
   margin: 0;
-  width: 368px;
-  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+  width: 392px;
+  background:
+    radial-gradient(circle at top left, rgba(84, 153, 255, 0.18), transparent 44%),
+    linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
   color: var(--ink);
-  font: 13px/1.4 "Avenir Next", "Helvetica Neue", Arial, sans-serif;
-  overflow: hidden;
+  font: 13px/1.45 "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 
 .popup {
-  padding: 14px;
+  padding: 16px;
 }
 
-.popup__header {
+.popup__hero {
   display: grid;
-  gap: 3px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
-.popup__eyebrow {
-  margin: 0 0 2px;
+.popup__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup__eyebrow,
+.panel__eyebrow {
+  margin: 0;
   color: var(--accent);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
+.popup__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 6px rgba(43, 111, 214, 0.12);
+}
+
+.popup__caption {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .popup__title {
   margin: 0;
-  font: 700 20px/1 "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+  font-size: 24px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
 }
 
 .popup__status,
 .hint,
 .message,
-.toggle small {
+.toggle small,
+.summary-line {
   color: var(--muted);
 }
 
+.popup__status {
+  margin: 0;
+  max-width: 320px;
+}
+
 .panel {
-  margin-bottom: 8px;
-  padding: 11px;
+  margin-bottom: 10px;
+  padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 18px;
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(12px);
 }
 
 .panel--hero {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 253, 0.98));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(240, 247, 255, 0.96)),
+    var(--panel);
 }
 
-.panel--compact {
-  display: grid;
-  gap: 8px;
+.panel--summary {
+  background: rgba(255, 255, 255, 0.9);
 }
 
+.panel__head,
 .capture-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+}
+
+.panel__title {
+  display: block;
+  margin-top: 4px;
+  font-size: 15px;
+  line-height: 1.2;
 }
 
 .summary-line {
-  margin: 0;
+  margin: 12px 0;
   color: var(--ink);
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 13px;
 }
 
 .status-line {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 0;
+  gap: 8px;
 }
 
 .badge {
   display: inline-flex;
   align-items: center;
-  min-height: 24px;
+  min-height: 28px;
   max-width: 100%;
-  padding: 5px 9px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: rgba(31, 75, 122, 0.08);
+  background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .badge--active {
-  background: var(--soft-success);
+  background: var(--success-soft);
   color: var(--success);
 }
 
 .badge--muted {
-  background: var(--soft-accent);
-  color: var(--accent);
+  background: rgba(103, 128, 157, 0.12);
+  color: #587390;
 }
 
 .toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(248, 251, 255, 0.8);
+}
+
+.toggle__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .toggle strong,
@@ -135,11 +190,10 @@ body {
 }
 
 .toggle strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .toggle small {
-  max-width: 230px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -148,67 +202,78 @@ body {
 .toggle input {
   width: 18px;
   height: 18px;
-  accent-color: var(--success);
+  accent-color: var(--accent);
 }
 
 .hint {
-  margin: 8px 0 0;
-  font-size: 11px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
 }
 
 button {
   border: 0;
-  border-radius: 11px;
-  min-height: 40px;
-  padding: 10px 10px;
+  border-radius: 14px;
+  min-height: 44px;
+  padding: 11px 12px;
   cursor: pointer;
-  background: linear-gradient(135deg, var(--accent), #2a5a8b);
-  color: #fff;
   font: inherit;
-  font-weight: 700;
-  box-shadow: 0 8px 18px rgba(31, 75, 122, 0.16);
-  transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+  font-weight: 800;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    opacity 140ms ease;
 }
 
 button:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 12px 20px rgba(31, 75, 122, 0.2);
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.52;
   transform: none;
   box-shadow: none;
 }
 
-.button-secondary,
-.button-ghost {
-  box-shadow: none;
+.button-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  box-shadow: var(--shadow-button);
+}
+
+.button-primary:hover:not(:disabled) {
+  box-shadow: 0 18px 32px rgba(43, 111, 214, 0.28);
 }
 
 .button-secondary {
   background: var(--panel-strong);
   color: var(--accent);
-  border: 1px solid rgba(31, 75, 122, 0.14);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 18px rgba(102, 146, 204, 0.12);
+}
+
+.button-tertiary {
+  background: rgba(248, 251, 255, 0.96);
+  color: var(--ink);
+  border: 1px solid var(--line);
 }
 
 .button-ghost {
   background: transparent;
   color: var(--muted);
-  border: 1px dashed rgba(98, 112, 133, 0.28);
+  border: 1px dashed rgba(103, 128, 157, 0.34);
 }
 
 .message {
   min-height: 18px;
-  margin: 0;
-  padding: 2px 2px 0;
-  font-size: 11px;
-  line-height: 1.35;
+  margin: 10px 2px 0;
+  font-size: 12px;
 }
