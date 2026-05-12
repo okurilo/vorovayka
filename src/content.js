@@ -3,6 +3,7 @@ const ARMED_ORIGINS_KEY = "armedOrigins";
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_REF_MARK = "__vorovaykaCaptureRef";
+const FULL_CAPTURE_KEY = "active";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
 const MAX_REQUEST_CHARS = 20 * 1024;
@@ -16,7 +17,8 @@ const MAX_RESPONSE_FACTS_PER_REQUEST = 1500;
 const MAX_TOTAL_RESPONSE_FACTS = 6000;
 const MAX_REQUEST_FACTS = 180;
 const MAX_BINDINGS = 160;
-const MAX_CANDIDATES = 12;
+const MAX_CANDIDATES = 20;
+const MAX_PRESELECTED_CANDIDATES = 6;
 const MAX_API_DEPENDENCIES = 16;
 const MAX_EVIDENCE_TIMELINE_EVENTS = 80;
 const MAX_ANALYSIS_DIAGNOSTICS = 18;
@@ -535,6 +537,8 @@ function captureDomSnapshot(target, facts = null) {
     attributes: captureSafeAttributes(target),
     ancestorChain: captureAncestorChain(target),
     outerHTML: truncateText(target.outerHTML || "", MAX_HTML_CHARS),
+    rawHtml: truncateText(target.outerHTML || "", MAX_HTML_CHARS),
+    cleanHtml: buildCleanDomHtml(target),
     previewHTML: buildSafePreviewHtml(target),
     innerText: truncateText(target.innerText || target.textContent || "", MAX_TEXT_CHARS),
     textFragments: extractTextFragments(target.innerText || target.textContent || ""),
@@ -947,6 +951,49 @@ function buildSafePreviewHtml(target) {
   }
 }
 
+function buildCleanDomHtml(target) {
+  try {
+    const clone = target.cloneNode(true);
+    sanitizeCleanTree(clone);
+    return truncateText(clone.outerHTML || "", MAX_HTML_CHARS);
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeCleanTree(node) {
+  if (!(node instanceof Element)) {
+    return;
+  }
+
+  if (BLOCKED_PREVIEW_TAGS.has(node.tagName.toLowerCase())) {
+    node.remove();
+    return;
+  }
+
+  Array.from(node.attributes).forEach((attribute) => {
+    const name = attribute.name.toLowerCase();
+    const value = attribute.value || "";
+    if (
+      name === "style" ||
+      name === "class" ||
+      name === "part" ||
+      name.startsWith("on") ||
+      name.startsWith("data-") ||
+      SENSITIVE_FIELD_PATTERN.test(name)
+    ) {
+      node.removeAttribute(attribute.name);
+      return;
+    }
+
+    if (URL_ATTRIBUTE_NAMES.has(name) && isInlineDataImageUrl(value)) {
+      node.setAttribute(attribute.name, "[inline-data-image]");
+    }
+  });
+
+  Array.from(node.children).forEach((child) => sanitizeCleanTree(child));
+}
+
 function sanitizePreviewTree(cloneNode, sourceNode) {
   if (!(cloneNode instanceof Element) || !(sourceNode instanceof Element)) {
     return;
@@ -959,12 +1006,17 @@ function sanitizePreviewTree(cloneNode, sourceNode) {
 
   Array.from(cloneNode.attributes).forEach((attribute) => {
     const name = attribute.name.toLowerCase();
+    const value = attribute.value || "";
     if (
       name === "style" ||
       name.startsWith("on") ||
-      URL_ATTRIBUTE_NAMES.has(name) ||
       SENSITIVE_FIELD_PATTERN.test(name)
     ) {
+      cloneNode.removeAttribute(attribute.name);
+      return;
+    }
+
+    if (URL_ATTRIBUTE_NAMES.has(name) && !isSafePreviewUrl(cloneNode.tagName, name, value)) {
       cloneNode.removeAttribute(attribute.name);
     }
   });
@@ -999,6 +1051,37 @@ function getSafeInlineStyle(element) {
   declarations.push("max-width: 100%");
   declarations.push("min-width: 0");
   return declarations.join("; ");
+}
+
+function isInlineDataImageUrl(value) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(value || "").trim());
+}
+
+function isSafePreviewUrl(tagName, attributeName, value) {
+  const normalizedTag = String(tagName || "").toLowerCase();
+  const normalizedAttribute = String(attributeName || "").toLowerCase();
+  const normalizedValue = String(value || "").trim();
+
+  if (!normalizedValue) {
+    return false;
+  }
+
+  if (normalizedAttribute === "srcset") {
+    return normalizedValue
+      .split(",")
+      .map((item) => item.trim().split(/\s+/)[0] || "")
+      .every(isInlineDataImageUrl);
+  }
+
+  if (normalizedAttribute === "src" || normalizedAttribute === "poster") {
+    return isInlineDataImageUrl(normalizedValue);
+  }
+
+  if ((normalizedAttribute === "href" || normalizedAttribute === "xlink:href") && normalizedTag === "image") {
+    return isInlineDataImageUrl(normalizedValue);
+  }
+
+  return false;
 }
 
 async function rankRequests(domSnapshot, eventTs, reportProgress = () => {}) {
@@ -1070,12 +1153,13 @@ async function rankRequests(domSnapshot, eventTs, reportProgress = () => {}) {
         }
         return b.timestamp - a.timestamp;
       })
-      .slice(0, Math.min(4, selected.length))
+      .slice(0, Math.min(MAX_PRESELECTED_CANDIDATES, selected.length))
       .map((record) => record.id)
   );
 
   return selected.map((record) => ({
     ...record,
+    responsePreview: buildResponsePreview(record.responseBody, record.contentType),
     preselected: preselectedIds.has(record.id)
   }));
 }
@@ -1126,7 +1210,7 @@ function showSelectionDialog(payload) {
 
   const summary = document.createElement("div");
   summary.className = "vorovayka-modal__summary";
-  summary.textContent = `${payload.networkCandidates.length} кандидатов, максимум ${MAX_CANDIDATES} для API-последовательности`;
+  summary.textContent = `${payload.networkCandidates.length} кандидатов для проверки. Отмечены лучшие по score, но список расширен.`;
 
   const list = document.createElement("div");
   list.className = "vorovayka-modal__list";
@@ -1151,7 +1235,8 @@ function showSelectionDialog(payload) {
     meta.className = "vorovayka-modal__meta";
     meta.innerHTML = [
       `<strong>${escapeHtml(candidate.method)} ${escapeHtml(shortenUrl(candidate.url))}</strong>`,
-      `<span>Status ${candidate.status || "?"} · score ${candidate.score} · ${escapeHtml(candidate.contentType || "unknown")}</span>`
+      `<span>Status ${candidate.status || "?"} · score ${candidate.score} · ${escapeHtml(candidate.contentType || "unknown")}</span>`,
+      `<small>${escapeHtml(candidate.responsePreview || "Preview ответа недоступен.")}</small>`
     ].join("");
 
     label.appendChild(checkbox);
@@ -1274,6 +1359,8 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
     cloneSpec: elementRecipe,
     network: selected
   };
+  capture.captureBundle = buildCaptureBundle(capture);
+  capture.captureSummary = buildCaptureSummary(capture.captureBundle);
   await persistCaptureToStorage(capture, reportProgress);
   reportProgress("Планирую автоочистку временных данных...", 98);
   await yieldToBrowser();
@@ -1283,9 +1370,28 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
 async function persistCaptureToStorage(capture, reportProgress = () => {}) {
   await chrome.storage.local.remove([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
 
-  const normalCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.normal, "normal");
+  let fullCaptureMeta = {
+    available: false,
+    key: FULL_CAPTURE_KEY
+  };
   try {
-    await writeCaptureToStorage(normalCapture);
+    const response = await chrome.runtime.sendMessage({
+      type: "STORE_FULL_CAPTURE",
+      capture
+    });
+    if (response?.ok) {
+      fullCaptureMeta = {
+        available: true,
+        key: response.fullCaptureKey || FULL_CAPTURE_KEY
+      };
+    }
+  } catch {
+    // Full capture is best-effort; compact storage remains the fallback.
+  }
+
+  const normalCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.normal, "normal", fullCaptureMeta);
+  try {
+    await writeCaptureToStorage(normalCapture, fullCaptureMeta);
     return;
   } catch (error) {
     if (!isQuotaExceededError(error)) {
@@ -1296,16 +1402,18 @@ async function persistCaptureToStorage(capture, reportProgress = () => {}) {
   reportProgress("Сжимаю capture для storage quota...", 94);
   await yieldToBrowser();
   await chrome.storage.local.remove([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
-  const tightCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.tight, "tight");
-  await writeCaptureToStorage(tightCapture);
+  const tightCapture = compactCaptureForStorage(capture, STORAGE_PROFILES.tight, "tight", fullCaptureMeta);
+  await writeCaptureToStorage(tightCapture, fullCaptureMeta);
 }
 
-async function writeCaptureToStorage(capture) {
+async function writeCaptureToStorage(capture, fullCaptureMeta = {}) {
   await chrome.storage.local.set({
     [COPYABLE_CAPTURE_STORAGE_KEY]: capture,
     [LATEST_CAPTURE_STORAGE_KEY]: {
       [CAPTURE_REF_MARK]: true,
       storageKey: COPYABLE_CAPTURE_STORAGE_KEY,
+      fullCaptureAvailable: Boolean(fullCaptureMeta.available),
+      fullCaptureKey: fullCaptureMeta.key || FULL_CAPTURE_KEY,
       createdAt: capture.createdAt,
       page: capture.page || {}
     }
@@ -1316,7 +1424,7 @@ function isQuotaExceededError(error) {
   return /quota/i.test(String(error?.message || error || ""));
 }
 
-function compactCaptureForStorage(capture, limits, profile) {
+function compactCaptureForStorage(capture, limits, profile, fullCaptureMeta = {}) {
   const recipe = compactRecipeForStorage(capture.cloneSpec || capture.elementRecipe, limits);
   return {
     createdAt: capture.createdAt,
@@ -1327,10 +1435,14 @@ function compactCaptureForStorage(capture, limits, profile) {
     elementRecipe: recipe,
     cloneSpec: recipe,
     network: (capture.network || []).map((record) => compactNetworkRecordForStorage(record, limits)),
+    captureBundle: compactCaptureBundle(capture.captureBundle, limits),
+    captureSummary: capture.captureSummary || buildCaptureSummary(capture.captureBundle),
     storageMeta: {
       profile,
       latestCaptureUsesRef: true,
-      rawResponseBodiesTruncated: true
+      rawResponseBodiesTruncated: true,
+      fullCaptureAvailable: Boolean(fullCaptureMeta.available),
+      fullCaptureKey: fullCaptureMeta.key || FULL_CAPTURE_KEY
     }
   };
 }
@@ -1370,6 +1482,83 @@ function compactNetworkRecordForStorage(record, limits) {
     bodyTooLarge: Boolean(record.bodyTooLarge || responseBody.length > limits.responseBodyChars),
     requestHeaders: record.requestHeaders || {},
     responseHeaders: record.responseHeaders || {}
+  };
+}
+
+function compactCaptureBundle(bundle, limits) {
+  if (!bundle) {
+    return null;
+  }
+
+  return {
+    ...bundle,
+    dom: {
+      ...(bundle.dom || {}),
+      textPreview: truncateText(String(bundle.dom?.textPreview || ""), 500),
+      previewHtml: truncateText(String(bundle.dom?.previewHtml || ""), limits.previewHtmlChars),
+      cleanHtml: truncateText(String(bundle.dom?.cleanHtml || ""), limits.domHtmlChars),
+      rawHtml: truncateText(String(bundle.dom?.rawHtml || ""), limits.domHtmlChars)
+    },
+    api: (bundle.api || []).map((record) => ({
+      ...compactNetworkRecordForStorage(record, limits),
+      responsePreview: record.responsePreview || buildResponsePreview(record.responseBody, record.contentType)
+    }))
+  };
+}
+
+function buildCaptureBundle(capture) {
+  const dom = capture?.dom || {};
+  return {
+    specVersion: "vorovayka.capture-bundle.v1",
+    capturedAt: capture?.createdAt || "",
+    page: {
+      title: capture?.page?.title || "",
+      url: capture?.page?.url || ""
+    },
+    selection: {
+      type: capture?.interaction?.type || "",
+      timestamp: capture?.interaction?.timestamp || 0
+    },
+    dom: {
+      tagName: dom.tagName || "",
+      selector: dom.selector || "",
+      textPreview: truncateText(String(dom.innerText || ""), 500),
+      rect: dom.rect || {},
+      previewHtml: dom.previewHTML || "",
+      cleanHtml: dom.cleanHtml || "",
+      rawHtml: dom.rawHtml || dom.outerHTML || ""
+    },
+    api: (capture?.network || []).map((record) => ({
+      id: record.id,
+      requestId: record.id,
+      method: record.method,
+      url: record.url,
+      status: record.status,
+      timestamp: record.timestamp,
+      contentType: record.contentType,
+      requestBody: record.requestBody,
+      initiatorStack: record.initiatorStack,
+      responseBody: record.responseBody,
+      requestHeaders: record.requestHeaders || {},
+      responseHeaders: record.responseHeaders || {},
+      responsePreview: buildResponsePreview(record.responseBody, record.contentType)
+    }))
+  };
+}
+
+function buildCaptureSummary(bundle) {
+  if (!bundle) {
+    return null;
+  }
+
+  const textPreview = truncateText(String(bundle.dom?.textPreview || ""), 80);
+  return {
+    capturedAt: bundle.capturedAt || "",
+    tagName: bundle.dom?.tagName || "",
+    selector: bundle.dom?.selector || "",
+    textPreview,
+    apiCount: Array.isArray(bundle.api) ? bundle.api.length : 0,
+    pageUrl: bundle.page?.url || ""
   };
 }
 
@@ -3251,27 +3440,29 @@ function ensureUi() {
         position: fixed;
         right: 16px;
         bottom: 16px;
-        width: 420px;
+        width: 460px;
         max-width: calc(100vw - 32px);
         max-height: 70vh;
         overflow: auto;
-        padding: 16px;
-        border-radius: 8px;
-        background: #fff;
+        padding: 14px;
+        border: 1px solid #dbe2ea;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.98);
         color: #0f172a;
-        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
         z-index: 2147483647;
       }
       #${UI_ROOT_ID} .vorovayka-modal__heading {
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 700;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
       }
       #${UI_ROOT_ID} .vorovayka-modal__summary,
       #${UI_ROOT_ID} .vorovayka-modal__empty {
-        color: #475569;
-        margin-bottom: 12px;
+        color: #64748b;
+        margin-bottom: 10px;
+        font-size: 12px;
       }
       #${UI_ROOT_ID} .vorovayka-modal__progress {
         display: grid;
@@ -3284,32 +3475,40 @@ function ensureUi() {
       }
       #${UI_ROOT_ID} .vorovayka-modal__list {
         display: grid;
-        gap: 8px;
+        gap: 6px;
       }
       #${UI_ROOT_ID} .vorovayka-modal__item {
         display: grid;
         grid-template-columns: 18px 1fr;
-        gap: 10px;
+        gap: 8px;
         align-items: start;
-        padding: 10px;
+        padding: 9px 10px;
         border: 1px solid #e2e8f0;
-        border-radius: 8px;
+        border-radius: 10px;
+        background: #fcfdff;
       }
       #${UI_ROOT_ID} .vorovayka-modal__meta strong,
-      #${UI_ROOT_ID} .vorovayka-modal__meta span {
+      #${UI_ROOT_ID} .vorovayka-modal__meta span,
+      #${UI_ROOT_ID} .vorovayka-modal__meta small {
         display: block;
       }
       #${UI_ROOT_ID} .vorovayka-modal__meta span {
         color: #64748b;
       }
+      #${UI_ROOT_ID} .vorovayka-modal__meta small {
+        margin-top: 4px;
+        color: #334155;
+        font-size: 12px;
+        line-height: 1.35;
+      }
       #${UI_ROOT_ID} .vorovayka-modal__actions {
         display: flex;
         gap: 8px;
-        margin-top: 14px;
+        margin-top: 12px;
       }
       #${UI_ROOT_ID} button {
         border: 0;
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 9px 12px;
         cursor: pointer;
         background: #0f172a;
@@ -3473,6 +3672,43 @@ function shortenUrl(url) {
     return url;
   }
   return `${url.slice(0, 77)}...`;
+}
+
+function buildResponsePreview(responseBody, contentType) {
+  const text = String(responseBody || "").trim();
+  if (!text) {
+    return "Пустой ответ";
+  }
+
+  if (String(contentType || "").toLowerCase().includes("application/json")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        const sample = parsed[0];
+        const sampleText = sample && typeof sample === "object"
+          ? Object.keys(sample).slice(0, 3).join(", ")
+          : truncateText(String(sample ?? ""), 40);
+        return `array[${parsed.length}]${sampleText ? ` · ${sampleText}` : ""}`;
+      }
+
+      if (parsed && typeof parsed === "object") {
+        const keys = Object.keys(parsed).slice(0, 4);
+        const sampleValue = keys
+          .map((key) => {
+            const value = parsed[key];
+            return typeof value === "string" || typeof value === "number"
+              ? `${key}: ${truncateText(String(value), 32)}`
+              : "";
+          })
+          .find(Boolean);
+        return `object: ${keys.join(", ")}${sampleValue ? ` · ${sampleValue}` : ""}`;
+      }
+    } catch {
+      return truncateText(text.replace(/\s+/g, " "), 110);
+    }
+  }
+
+  return truncateText(text.replace(/\s+/g, " "), 110);
 }
 
 function normalizeText(text) {

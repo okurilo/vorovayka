@@ -4,6 +4,9 @@ const CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_EXPIRY_ALARM = "latestCaptureExpiry";
 const CAPTURE_TTL_MS = 5 * 60 * 1000;
+const FULL_CAPTURE_DB_NAME = "vorovayka-full-capture";
+const FULL_CAPTURE_STORE_NAME = "captures";
+const FULL_CAPTURE_KEY = "active";
 
 initialize();
 
@@ -91,6 +94,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "STORE_FULL_CAPTURE") {
+    void storeFullCapture(message.capture)
+      .then(() => sendResponse({ ok: true, fullCaptureKey: FULL_CAPTURE_KEY }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (message?.type === "GET_FULL_CAPTURE") {
+    void getFullCapture()
+      .then((capture) => sendResponse({ ok: true, capture }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   if (message?.type === "SET_DOMAIN_ARMED") {
     void setCurrentDomainArmed(Boolean(message.armed))
       .then((result) => sendResponse({ ok: true, ...result }))
@@ -158,6 +175,7 @@ async function syncActionState(tabId, url) {
 async function clearEphemeralCapture() {
   await chrome.storage.local.remove([CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
   await chrome.alarms.clear(CAPTURE_EXPIRY_ALARM);
+  await clearFullCapture();
 }
 
 function isPlainObject(value) {
@@ -179,7 +197,8 @@ async function getPopupState() {
     isArmed: Boolean(origin && armedOrigins[origin]),
     hasLatestCapture: Boolean(capture[CAPTURE_STORAGE_KEY]),
     hasCopyableCapture: Boolean(capture[COPYABLE_CAPTURE_STORAGE_KEY]),
-    hasAnyCapture: Boolean(capture[CAPTURE_STORAGE_KEY] || capture[COPYABLE_CAPTURE_STORAGE_KEY])
+    hasAnyCapture: Boolean(capture[CAPTURE_STORAGE_KEY] || capture[COPYABLE_CAPTURE_STORAGE_KEY]),
+    captureSummary: capture[COPYABLE_CAPTURE_STORAGE_KEY]?.captureSummary || null
   };
 }
 
@@ -226,4 +245,67 @@ async function startCaptureOnActiveTab() {
 
   await chrome.tabs.sendMessage(tab.id, { type: "START_CAPTURE" });
   return { started: true };
+}
+
+function openFullCaptureDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(FULL_CAPTURE_DB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(FULL_CAPTURE_STORE_NAME)) {
+        db.createObjectStore(FULL_CAPTURE_STORE_NAME, { keyPath: "id" });
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Failed to open full capture DB"));
+  });
+}
+
+async function withFullCaptureStore(mode, handler) {
+  const db = await openFullCaptureDb();
+  try {
+    const tx = db.transaction(FULL_CAPTURE_STORE_NAME, mode);
+    const store = tx.objectStore(FULL_CAPTURE_STORE_NAME);
+    const result = await handler(store);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB transaction failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+    });
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
+function requestToPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB request failed"));
+  });
+}
+
+async function storeFullCapture(capture) {
+  if (!capture) {
+    throw new Error("Capture payload is required");
+  }
+
+  await withFullCaptureStore("readwrite", async (store) => {
+    store.put({
+      id: FULL_CAPTURE_KEY,
+      createdAt: Date.now(),
+      capture
+    });
+  });
+}
+
+async function getFullCapture() {
+  const record = await withFullCaptureStore("readonly", (store) => requestToPromise(store.get(FULL_CAPTURE_KEY)));
+  return record?.capture || null;
+}
+
+async function clearFullCapture() {
+  await withFullCaptureStore("readwrite", (store) => requestToPromise(store.delete(FULL_CAPTURE_KEY))).catch(() => null);
 }

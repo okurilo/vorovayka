@@ -10,7 +10,7 @@
     <main class="popup">
       <header class="popup__header">
         <p class="popup__eyebrow">Vorovayka</p>
-        <h1 class="popup__title">Управление</h1>
+        <h1 class="popup__title">Capture</h1>
         <p id="status" class="popup__status">Проверяю активную вкладку...</p>
       </header>
 
@@ -27,6 +27,19 @@
           <input id="armedToggle" type="checkbox" />
         </label>
         <p class="hint">После переключения вкладка перезагрузится.</p>
+      </section>
+
+      <section class="panel panel--compact">
+        <div class="capture-head">
+          <strong>Последний захват</strong>
+          <span id="captureReadyBadge" class="badge badge--muted">Пусто</span>
+        </div>
+        <p id="selectionSummary" class="summary-line">Элемент ещё не выбран.</p>
+        <div class="status-line">
+          <span id="selectionBadge" class="badge badge--muted">DOM</span>
+          <span id="apiCountBadge" class="badge badge--muted">API 0</span>
+          <span id="captureTimeBadge" class="badge badge--muted">Нет времени</span>
+        </div>
       </section>
 
       <section class="panel actions">
