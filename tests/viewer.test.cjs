@@ -56,10 +56,46 @@ describe("viewer export helpers", () => {
       items: {
         type: "object",
         properties: {
-          id: { type: "integer" },
-          name: { type: "string" }
+          id: { type: "integer", examples: [1] },
+          name: { type: "string", examples: ["Ada"] }
         }
       }
+    });
+
+    expect(viewer.buildDataShape(null)).toEqual({
+      type: "null",
+      examples: [null]
+    });
+  });
+
+  it("buildDataShape keeps deeper nesting and more object fields before truncation", () => {
+    const wideObject = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [
+      `field${index + 1}`,
+      index + 1
+    ]));
+    const deepValue = {
+      level1: {
+        level2: {
+          level3: {
+            level4: {
+              level5: {
+                level6: wideObject
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const schema = viewer.buildDataShape(deepValue);
+    expect(Object.keys(
+      schema.properties.level1.properties.level2.properties.level3.properties.level4.properties.level5.properties.level6.properties
+    )).toHaveLength(20);
+    expect(
+      schema.properties.level1.properties.level2.properties.level3.properties.level4.properties.level5.properties.level6.properties.field20
+    ).toEqual({
+      type: "integer",
+      examples: [20]
     });
   });
 
@@ -139,7 +175,7 @@ describe("viewer export helpers", () => {
                 items: {
                   type: "object",
                   properties: {
-                    id: { type: "integer" }
+                    id: { type: "integer", examples: [1] }
                   }
                 }
               }
@@ -198,6 +234,174 @@ describe("viewer export helpers", () => {
     ]);
   });
 
+  it("buildApiSchemaExport enriches recipe schema with OAS 3.1 examples from response body", () => {
+    const apiRecords = [
+      {
+        id: "api-1",
+        method: "GET",
+        url: "https://site.test/api/users",
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        responseBody: '{"users":[{"id":1,"name":"Ada"}]}'
+      }
+    ];
+
+    const recipe = {
+      apiSequence: [
+        {
+          requestId: "api-1",
+          response: {
+            shape: {
+              type: "object",
+              properties: {
+                users: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: { type: "integer" },
+                      name: { type: "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    };
+
+    expect(viewer.buildApiSchemaExport(apiRecords, recipe)).toEqual([
+      {
+        id: "api-1",
+        method: "GET",
+        url: "https://site.test/api/users",
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        responseSchema: {
+          type: "object",
+          properties: {
+            users: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "integer", examples: [1] },
+                  name: { type: "string", examples: ["Ada"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+  });
+
+  it("buildApiSchemaExport restores nested properties when recipe schema was truncated to empty object", () => {
+    const apiRecords = [
+      {
+        id: "api-1",
+        method: "POST",
+        url: "https://site.test/youtubei/v1/guide",
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        responseBody: JSON.stringify({
+          items: [
+            {
+              guideSectionRenderer: {
+                items: [
+                  {
+                    entryRenderer: {
+                      label: "Home",
+                      selected: true
+                    }
+                  }
+                ],
+                trackingParams: "abc123"
+              }
+            }
+          ]
+        })
+      }
+    ];
+
+    const recipe = {
+      apiSequence: [
+        {
+          requestId: "api-1",
+          response: {
+            shape: {
+              type: "object",
+              properties: {
+                items: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      guideSectionRenderer: {
+                        type: "object",
+                        properties: {
+                          items: {
+                            type: "array",
+                            items: {
+                              type: "object",
+                              properties: {}
+                            }
+                          },
+                          trackingParams: {
+                            type: "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    };
+
+    expect(viewer.buildApiSchemaExport(apiRecords, recipe)[0].responseSchema).toEqual({
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              guideSectionRenderer: {
+                type: "object",
+                properties: {
+                  items: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        entryRenderer: {
+                          type: "object",
+                          properties: {
+                            label: { type: "string", examples: ["Home"] },
+                            selected: { type: "boolean", examples: [true] }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  trackingParams: {
+                    type: "string",
+                    examples: ["abc123"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+
   it("getSelectedApiIds falls back to all api ids before checkboxes mount", () => {
     const bundle = {
       api: [
@@ -228,8 +432,9 @@ describe("viewer export helpers", () => {
       responseBody: "plain text",
       contentType: "text/plain"
     })).toEqual({
-      type: "text",
-      preview: "plain text"
+      type: "string",
+      contentMediaType: "text/plain",
+      examples: ["plain text"]
     });
   });
 });
