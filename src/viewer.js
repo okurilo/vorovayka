@@ -4,6 +4,8 @@ const rawJsonPanelEl = document.querySelector(".debug-panel");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_REF_MARK = "__widgetronCaptureRef";
+const MAX_OPENAPI_SCHEMA_DEPTH = 8;
+const MAX_OPENAPI_SCHEMA_PROPERTIES = 64;
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
@@ -439,7 +441,12 @@ function getApiResponseSchema(request, recipe = {}, index = 0) {
     String(step?.requestId || "") === String(requestId)
   ));
   if (recipeStep?.response?.shape) {
-    return recipeStep.response.shape;
+    const parsed = parseJsonBody(request?.responseBody, request?.contentType);
+    const rawBody = String(request?.responseBody || "").trim();
+    const sampleValue = parsed !== null || rawBody === "null"
+      ? parsed
+      : undefined;
+    return normalizeSchemaShape(recipeStep.response.shape, sampleValue, request?.contentType);
   }
   return extractResponseShape(request);
 }
@@ -793,14 +800,127 @@ function buildResponsePreview(responseBody, contentType) {
 
 function extractResponseShape(request) {
   const parsed = parseJsonBody(request?.responseBody, request?.contentType);
-  if (parsed == null) {
-    return {
-      type: request?.responseBody ? "text" : "empty",
-      preview: shortenText(request?.responseBody || "", 500)
-    };
+  const rawBody = String(request?.responseBody || "").trim();
+  if (parsed == null && rawBody !== "null") {
+    return buildNonJsonResponseSchema(request);
   }
 
   return buildDataShape(parsed);
+}
+
+function buildNonJsonResponseSchema(request) {
+  const body = request?.responseBody;
+  const contentType = String(request?.contentType || "").trim().toLowerCase();
+  if (!body) {
+    return {};
+  }
+
+  const schema = {
+    type: "string"
+  };
+
+  if (contentType) {
+    schema.contentMediaType = contentType.split(";")[0];
+  }
+
+  const preview = shortenText(body, 500);
+  if (preview) {
+    schema.examples = [preview];
+  }
+
+  return schema;
+}
+
+function normalizeSchemaShape(schema, sampleValue, contentType = "") {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    if (sampleValue !== undefined) {
+      return buildDataShape(sampleValue);
+    }
+    return {};
+  }
+
+  const normalized = { ...schema };
+
+  if (normalized.nullable === true) {
+    if (typeof normalized.type === "string" && normalized.type !== "null") {
+      normalized.type = [normalized.type, "null"];
+    } else if (!normalized.type) {
+      normalized.type = "null";
+    }
+    delete normalized.nullable;
+  }
+
+  if (normalized.type === "text") {
+    normalized.type = "string";
+  }
+
+  if (normalized.type === "empty") {
+    delete normalized.type;
+  }
+
+  if (normalized.preview && !normalized.examples) {
+    normalized.examples = [normalized.preview];
+  }
+  delete normalized.preview;
+
+  if (normalized.type === "string" && !normalized.contentMediaType) {
+    const mediaType = String(contentType || "").trim().toLowerCase().split(";")[0];
+    if (mediaType && mediaType !== "application/json") {
+      normalized.contentMediaType = mediaType;
+    }
+  }
+
+  if (sampleValue === undefined) {
+    return normalized;
+  }
+
+  if (sampleValue === null) {
+    if (!normalized.examples) {
+      normalized.examples = [null];
+    }
+    if (!normalized.type) {
+      normalized.type = "null";
+    }
+    return normalized;
+  }
+
+  if (Array.isArray(sampleValue)) {
+    if (!normalized.type) {
+      normalized.type = "array";
+    }
+    delete normalized.examples;
+    const firstMeaningfulItem = sampleValue.find((item) => item != null);
+    if (normalized.items && firstMeaningfulItem !== undefined) {
+      normalized.items = normalizeSchemaShape(normalized.items, firstMeaningfulItem);
+    }
+    return normalized;
+  }
+
+  if (sampleValue && typeof sampleValue === "object") {
+    if (!normalized.type) {
+      normalized.type = "object";
+    }
+    const keys = Object.keys(sampleValue).slice(0, MAX_OPENAPI_SCHEMA_PROPERTIES);
+    delete normalized.examples;
+    if (!normalized.properties) {
+      normalized.properties = {};
+    }
+    for (const key of keys) {
+      normalized.properties[key] = normalizeSchemaShape(
+        normalized.properties[key] || {},
+        sampleValue[key]
+      );
+    }
+    return normalized;
+  }
+
+  if (!normalized.examples) {
+    normalized.examples = [sampleValue];
+  }
+  if (!normalized.type) {
+    normalized.type = Number.isInteger(sampleValue) ? "integer" : typeof sampleValue;
+  }
+  return normalized;
 }
 
 function parseJsonBody(body, contentType = "") {
@@ -826,7 +946,8 @@ function parseJsonBody(body, contentType = "") {
 function buildDataShape(value, depth = 0) {
   if (value === null) {
     return {
-      nullable: true
+      type: "null",
+      examples: [null]
     };
   }
 
@@ -834,13 +955,13 @@ function buildDataShape(value, depth = 0) {
     const firstMeaningfulItem = value.find((item) => item != null);
     return {
       type: "array",
-      items: depth >= 4 || firstMeaningfulItem == null ? {} : buildDataShape(firstMeaningfulItem, depth + 1)
+      items: depth >= MAX_OPENAPI_SCHEMA_DEPTH || firstMeaningfulItem == null ? {} : buildDataShape(firstMeaningfulItem, depth + 1)
     };
   }
 
   if (value && typeof value === "object") {
-    const keys = Object.keys(value).slice(0, 16);
-    if (depth >= 4) {
+    const keys = Object.keys(value).slice(0, MAX_OPENAPI_SCHEMA_PROPERTIES);
+    if (depth >= MAX_OPENAPI_SCHEMA_DEPTH) {
       return {
         type: "object",
         properties: Object.fromEntries(keys.map((key) => [key, {}]))
@@ -854,7 +975,8 @@ function buildDataShape(value, depth = 0) {
   }
 
   return {
-    type: Number.isInteger(value) ? "integer" : typeof value
+    type: Number.isInteger(value) ? "integer" : typeof value,
+    examples: [value]
   };
 }
 
