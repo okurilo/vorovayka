@@ -2,6 +2,7 @@
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
+const CAPTURE_MODE_STORAGE_KEY = "captureMode";
 const CAPTURE_EXPIRY_ALARM = "latestCaptureExpiry";
 const CAPTURE_TTL_MS = 5 * 60 * 1000;
 const FULL_CAPTURE_DB_NAME = "widgetron-full-capture";
@@ -46,7 +47,11 @@ async function handleCaptureAction() {
   }
 
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: "START_CAPTURE" });
+    const captureMode = await getCaptureMode();
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "START_CAPTURE",
+      captureMode
+    });
   } catch (error) {
     console.warn("Failed to start capture on active tab", error);
   }
@@ -94,6 +99,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "SET_CAPTURE_MODE") {
+    void setCaptureMode(message.captureMode)
+      .then((captureMode) => sendResponse({ ok: true, captureMode }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   if (message?.type === "STORE_FULL_CAPTURE") {
     void storeFullCapture(message.capture)
       .then(() => sendResponse({ ok: true, fullCaptureKey: FULL_CAPTURE_KEY }))
@@ -133,6 +145,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function getArmedOrigins() {
   const stored = await chrome.storage.local.get(ARMED_ORIGINS_KEY);
   return isPlainObject(stored[ARMED_ORIGINS_KEY]) ? stored[ARMED_ORIGINS_KEY] : {};
+}
+
+async function getCaptureMode() {
+  const stored = await chrome.storage.local.get(CAPTURE_MODE_STORAGE_KEY);
+  return normalizeCaptureMode(stored[CAPTURE_MODE_STORAGE_KEY]);
+}
+
+function normalizeCaptureMode(value) {
+  return value === "pro" ? "pro" : "normal";
 }
 
 function getOrigin(url) {
@@ -188,11 +209,13 @@ async function getPopupState() {
   const origin = getOrigin(url);
   const armedOrigins = origin ? await getArmedOrigins() : {};
   const capture = await chrome.storage.local.get([CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
+  const captureMode = await getCaptureMode();
 
   return {
     tabId: tab?.id ?? null,
     url,
     origin,
+    captureMode,
     isSupportedPage: Boolean(origin),
     isArmed: Boolean(origin && armedOrigins[origin]),
     hasLatestCapture: Boolean(capture[CAPTURE_STORAGE_KEY]),
@@ -227,6 +250,14 @@ async function setCurrentDomainArmed(armed) {
   return { isArmed: armed, reloaded: true };
 }
 
+async function setCaptureMode(captureMode) {
+  const normalized = normalizeCaptureMode(captureMode);
+  await chrome.storage.local.set({
+    [CAPTURE_MODE_STORAGE_KEY]: normalized
+  });
+  return normalized;
+}
+
 async function startCaptureOnActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !tab.url) {
@@ -243,7 +274,11 @@ async function startCaptureOnActiveTab() {
     throw new Error("Capture is disabled for this domain");
   }
 
-  await chrome.tabs.sendMessage(tab.id, { type: "START_CAPTURE" });
+  const captureMode = await getCaptureMode();
+  await chrome.tabs.sendMessage(tab.id, {
+    type: "START_CAPTURE",
+    captureMode
+  });
   return { started: true };
 }
 

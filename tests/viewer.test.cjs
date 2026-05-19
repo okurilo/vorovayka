@@ -437,6 +437,75 @@ describe("viewer export helpers", () => {
       examples: ["plain text"]
     });
   });
+
+  it("buildDataShape keeps up to three compact examples and sanitizes base64 payloads", () => {
+    expect(viewer.buildDataShape(["one", "two", "three", "four"])).toEqual({
+      type: "array",
+      items: {
+        type: "string",
+        examples: ["one"]
+      }
+    });
+
+    expect(viewer.extractResponseShape({
+      responseBody: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+      contentType: "text/plain"
+    })).toEqual({
+      type: "string",
+      contentMediaType: "text/plain",
+      examples: ["base64"]
+    });
+  });
+
+  it("buildExportPayload reuses stored apiSchema when raw api records are hidden", () => {
+    const bundle = {
+      specVersion: "widgetron.capture-bundle.v1",
+      capturedAt: "2026-05-15T10:00:00.000Z",
+      page: { url: "https://site.test", title: "Demo" },
+      dom: {
+        tagName: "section",
+        selector: ".widget",
+        textPreview: "Visible text",
+        cleanHtml: "<section>Visible text</section>"
+      },
+      apiSchema: [
+        {
+          id: "api-1",
+          method: "GET",
+          url: "https://site.test/api/widget",
+          status: 200,
+          contentType: "application/json",
+          responseSchema: {
+            type: "object",
+            properties: {
+              title: { type: "string", examples: ["Visible text"] }
+            }
+          }
+        }
+      ],
+      apiResolution: {
+        strategy: "single-best-match",
+        autoSelectedIds: ["api-1"]
+      }
+    };
+
+    expect(viewer.buildExportPayload(bundle, {}, "all", new Set(["api-1"]))).toEqual({
+      specVersion: "widgetron.capture-bundle.v1",
+      capturedAt: "2026-05-15T10:00:00.000Z",
+      page: { url: "https://site.test", title: "Demo" },
+      apiResolution: {
+        strategy: "single-best-match",
+        autoSelectedIds: ["api-1"]
+      },
+      dom: {
+        tagName: "section",
+        selector: ".widget",
+        textPreview: "Visible text",
+        cleanHtml: "<section>Visible text</section>"
+      },
+      apiSchema: bundle.apiSchema
+    });
+  });
 });
 
 

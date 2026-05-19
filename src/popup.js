@@ -3,11 +3,14 @@ const originEl = document.getElementById("origin");
 const messageEl = document.getElementById("message");
 const domainBadge = document.getElementById("domainBadge");
 const captureBadge = document.getElementById("captureBadge");
+const summaryPanel = document.getElementById("summaryPanel");
 const captureReadyBadge = document.getElementById("captureReadyBadge");
 const selectionSummaryEl = document.getElementById("selectionSummary");
 const selectionBadge = document.getElementById("selectionBadge");
 const apiCountBadge = document.getElementById("apiCountBadge");
 const captureTimeBadge = document.getElementById("captureTimeBadge");
+const modeNormal = document.getElementById("modeNormal");
+const modePro = document.getElementById("modePro");
 const armedToggle = document.getElementById("armedToggle");
 const startButton = document.getElementById("startButton");
 const copyButton = document.getElementById("copyButton");
@@ -19,8 +22,24 @@ const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 
 let popupState = null;
 
+function setPopupStateForTest(nextState) {
+  popupState = nextState;
+}
+
+modeNormal.addEventListener("change", () => {
+  if (modeNormal.checked) {
+    void updateCaptureMode("normal");
+  }
+});
+
+modePro.addEventListener("change", () => {
+  if (modePro.checked) {
+    void updateCaptureMode("pro");
+  }
+});
+
 armedToggle.addEventListener("change", async () => {
-  setMessage("Обновляю настройки домена...");
+  setMessage("Обновляю доступ для сайта...");
   setBusy(true);
 
   const result = await chrome.runtime.sendMessage({
@@ -36,21 +55,22 @@ armedToggle.addEventListener("change", async () => {
 
   setMessage(
     armedToggle.checked
-      ? "Захват включён. Вкладка перезагрузится."
-      : "Захват выключен. Вкладка перезагрузится."
+      ? "Готово. Вкладка перезагрузится."
+      : "Сбор отключён. Вкладка перезагрузится."
   );
   await refreshState();
 });
 
 startButton.addEventListener("click", async () => {
-  setMessage("Запускаю выбор элемента...");
+  const isPro = popupState?.captureMode === "pro";
+  setMessage(isPro ? "Запускаю выбор элемента..." : "Выберите нужный блок на странице.");
   const result = await chrome.runtime.sendMessage({ type: "START_CAPTURE" });
   if (!result?.ok) {
     setMessage(result?.error || "Не удалось запустить выбор.");
     return;
   }
 
-  setMessage("Выбор элемента активирован.");
+  setMessage(isPro ? "Выбор элемента активирован." : "Выберите нужный блок на странице.");
   window.close();
 });
 
@@ -119,9 +139,32 @@ async function refreshState() {
   setBusy(false);
 }
 
+async function updateCaptureMode(captureMode) {
+  setMessage("Переключаю режим...");
+  setBusy(true);
+  const result = await chrome.runtime.sendMessage({
+    type: "SET_CAPTURE_MODE",
+    captureMode
+  });
+  if (!result?.ok) {
+    setMessage(result?.error || "Не удалось изменить режим.");
+    await refreshState();
+    return;
+  }
+  popupState = {
+    ...(popupState || {}),
+    captureMode: result.captureMode || captureMode
+  };
+  renderState();
+  setBusy(false);
+  setMessage(result.captureMode === "pro" ? "Включён PRO режим." : "Включён обычный режим.");
+}
+
 function renderState() {
   const isSupported = Boolean(popupState?.isSupportedPage);
   const isArmed = Boolean(popupState?.isArmed);
+  const captureMode = popupState?.captureMode === "pro" ? "pro" : "normal";
+  const isPro = captureMode === "pro";
   const hasLatestCapture = Boolean(popupState?.hasLatestCapture);
   const hasCopyableCapture = Boolean(popupState?.hasCopyableCapture);
   const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
@@ -131,33 +174,40 @@ function renderState() {
 
   originEl.textContent = popupState?.origin || "Неподдерживаемая вкладка";
   domainBadge.textContent = originText;
-  captureBadge.textContent = isArmed ? "Захват активен" : "Захват выключен";
+  modeNormal.checked = !isPro;
+  modePro.checked = isPro;
+  captureBadge.textContent = isArmed ? "Сбор включён" : "Сбор выключен";
   captureBadge.className = `badge ${isArmed ? "badge--active" : "badge--muted"}`;
   armedToggle.checked = isArmed;
   armedToggle.disabled = !isSupported;
   startButton.disabled = !isSupported || !isArmed;
+  startButton.textContent = "Выбрать элемент";
   copyButton.disabled = !hasAnyCapture;
   copyButton.textContent = hasLatestCapture || !hasAnyCapture ? "Скопировать захват" : "Скопировать последний";
   clearButton.disabled = !hasAnyCapture;
+  summaryPanel.hidden = !isPro;
+  viewerButton.hidden = !isPro;
+  copyButton.hidden = !isPro;
+  clearButton.hidden = !isPro;
   renderCaptureSummary(summary, hasAnyCapture);
 
   if (!messageEl.textContent) {
     if (hasLatestCapture) {
-      setMessage("Новый захват готов.");
+      setMessage(isPro ? "Новый захват готов." : "Готово. Контекст сохранён.");
     } else if (hasCopyableCapture) {
-      setMessage("Локальная копия ещё доступна.");
+      setMessage(isPro ? "Последний захват ещё доступен." : "");
     }
   }
 
   if (!isSupported) {
-    statusEl.textContent = "Откройте обычную страницу по http или https.";
+    statusEl.textContent = "Откройте обычный сайт.";
     viewerButton.disabled = false;
     return;
   }
 
   statusEl.textContent = isArmed
-    ? "Захват включён для этого домена."
-    : "Захват пока не включён для этого домена.";
+    ? (isPro ? "Сбор включён для этого сайта." : "Теперь выберите нужный блок.")
+    : (isPro ? "Сначала включите сбор на сайте." : "Сначала разрешите сбор на сайте.");
   viewerButton.disabled = false;
 }
 
@@ -188,6 +238,8 @@ function renderCaptureSummary(summary, hasAnyCapture) {
 function setBusy(isBusy) {
   const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
   armedToggle.disabled = isBusy || !popupState?.isSupportedPage;
+  modeNormal.disabled = isBusy;
+  modePro.disabled = isBusy;
   startButton.disabled = isBusy || !popupState?.isSupportedPage || !popupState?.isArmed;
   copyButton.disabled = isBusy || !hasAnyCapture;
   viewerButton.disabled = isBusy;

@@ -9,12 +9,24 @@
   <body>
     <main class="popup">
       <header class="popup__hero">
-        <div class="popup__brand">
-          <p class="popup__eyebrow">Виджетрон</p>
-          <span class="popup__dot" aria-hidden="true"></span>
-          <span class="popup__caption">Рабочий режим</span>
+        <div class="popup__topline">
+          <div class="popup__brand">
+            <p class="popup__eyebrow">Виджетрон</p>
+            <span class="popup__dot" aria-hidden="true"></span>
+            <span class="popup__caption">Захват виджетов</span>
+          </div>
+          <div class="mode-switch" role="radiogroup" aria-label="Режим захвата">
+            <label class="mode-switch__option">
+              <input id="modeNormal" type="radio" name="capture-mode" value="normal" checked />
+              <span>Обычный</span>
+            </label>
+            <label class="mode-switch__option">
+              <input id="modePro" type="radio" name="capture-mode" value="pro" />
+              <span>PRO</span>
+            </label>
+          </div>
         </div>
-        <h1 class="popup__title">Управление захватом</h1>
+        <h1 class="popup__title">Выберите нужный блок</h1>
         <p id="status" class="popup__status">Проверяю активную вкладку...</p>
       </header>
 
@@ -29,16 +41,16 @@
 
         <label class="toggle">
           <span class="toggle__copy">
-            <strong>Собирать запросы</strong>
-            <small id="origin">Текущий домен</small>
+            <strong>Разрешить сбор на сайте</strong>
+            <small id="origin">Текущий сайт</small>
           </span>
           <input id="armedToggle" type="checkbox" />
         </label>
 
-        <p class="hint">После переключения вкладка перезагрузится, чтобы начать ранний захват запросов.</p>
+        <p class="hint">После включения можно сразу выбирать блок на странице.</p>
       </section>
 
-      <section class="panel panel--summary">
+      <section id="summaryPanel" class="panel panel--summary">
         <div class="capture-head">
           <div>
             <p class="panel__eyebrow">Последний результат</p>

@@ -6,6 +6,7 @@ const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 const MAX_OPENAPI_SCHEMA_DEPTH = 8;
 const MAX_OPENAPI_SCHEMA_PROPERTIES = 64;
+const MAX_SCHEMA_EXAMPLES_PER_FIELD = 3;
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
@@ -125,7 +126,8 @@ function normalizeCaptureBundle(capture) {
     },
     selection: {
       type: capture.interaction?.type || "",
-      timestamp: capture.interaction?.timestamp || 0
+      timestamp: capture.interaction?.timestamp || 0,
+      mode: capture.captureMode || "pro"
     },
     dom: {
       tagName: capture.dom?.tagName || "",
@@ -136,6 +138,7 @@ function normalizeCaptureBundle(capture) {
       cleanHtml: capture.dom?.cleanHtml || stripHtmlClassesAndStyles(capture.dom?.outerHTML || ""),
       rawHtml: capture.dom?.rawHtml || capture.dom?.outerHTML || ""
     },
+    apiResolution: capture.apiResolution || null,
     api: (capture.network || []).map((item) => ({
       id: item.id,
       requestId: item.id,
@@ -183,13 +186,18 @@ function renderOverview(bundle, recipe) {
     previewWrap.appendChild(empty);
   }
 
+  const apiCount = Array.isArray(bundle.api) && bundle.api.length
+    ? bundle.api.length
+    : Array.isArray(bundle.apiSchema)
+      ? bundle.apiSchema.length
+      : 0;
   const meta = document.createElement("div");
   meta.className = "meta-grid";
   meta.innerHTML = `
     ${renderMetric("Элемент", bundle.dom?.tagName || "—")}
     ${renderMetric("Селектор", bundle.dom?.selector || "—")}
     ${renderMetric("Текст", bundle.dom?.textPreview || "—")}
-    ${renderMetric("API", String(bundle.api?.length || 0))}
+    ${renderMetric("API", String(apiCount))}
     ${renderMetric("Связи", String((recipe.bindings || recipe.dataRequirements || []).length || 0))}
   `;
 
@@ -244,6 +252,7 @@ function renderCaptureWarnings(capture) {
 }
 
 function renderApiSection(bundle) {
+  const schemaOnlyCount = Array.isArray(bundle.apiSchema) ? bundle.apiSchema.length : 0;
   const section = document.createElement("section");
   section.className = "card";
 
@@ -254,7 +263,7 @@ function renderApiSection(bundle) {
       <h2>Подключённые API</h2>
       <p class="section-copy">Это запросы, которые участвуют в объяснении выбранного виджета и его данных.</p>
     </div>
-    <span class="count-badge">${escapeHtml(String(bundle.api?.length || 0))}</span>
+    <span class="count-badge">${escapeHtml(String(bundle.api?.length || schemaOnlyCount || 0))}</span>
   `;
 
   section.appendChild(header);
@@ -262,7 +271,9 @@ function renderApiSection(bundle) {
   if (!bundle.api?.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "API ещё не выбраны. Сейчас доступен только DOM.";
+    empty.textContent = schemaOnlyCount > 0
+      ? "Для этого захвата сохранена только OpenAPI-типизация без сырых request/response body."
+      : "API ещё не выбраны. Сейчас доступен только DOM.";
     section.appendChild(empty);
     return section;
   }
@@ -362,7 +373,7 @@ function renderExportSection(bundle, recipe = {}) {
 function getSelectedApiIds(bundle, root = document) {
   const allInputs = Array.from(root.querySelectorAll?.(".api-select") || []);
   if (!allInputs.length) {
-    return new Set((bundle.api || []).map((item, index) => String(item.id || item.requestId || String(index))));
+    return new Set((bundle.api || bundle.apiSchema || []).map((item, index) => String(item.id || item.requestId || String(index))));
   }
 
   return new Set(
@@ -377,12 +388,21 @@ function buildExportPayload(bundle, recipe, scope, selectedApiIds) {
     const id = item.id || item.requestId || String(index);
     return selectedApiIds.has(id);
   });
+  const selectedSchema = selectedApi.length > 0
+    ? buildApiSchemaExport(selectedApi, recipe)
+    : (bundle.apiSchema || []).filter((item, index) => {
+      const id = item.id || item.requestId || String(index);
+      return selectedApiIds.has(id);
+    });
 
   const payload = {
     specVersion: bundle.specVersion || "widgetron.capture-bundle.v1",
     capturedAt: bundle.capturedAt || "",
     page: bundle.page || {}
   };
+  if (bundle.apiResolution) {
+    payload.apiResolution = bundle.apiResolution;
+  }
 
   if (scope === "api") {
     payload.api = selectedApi;
@@ -390,7 +410,7 @@ function buildExportPayload(bundle, recipe, scope, selectedApiIds) {
   }
 
   if (scope === "api-types") {
-    payload.apiSchema = buildApiSchemaExport(selectedApi, recipe);
+    payload.apiSchema = selectedSchema;
     return payload;
   }
 
@@ -420,7 +440,7 @@ function buildExportPayload(bundle, recipe, scope, selectedApiIds) {
     textPreview: bundle.dom?.textPreview || "",
     cleanHtml: bundle.dom?.cleanHtml || ""
   };
-  payload.apiSchema = buildApiSchemaExport(selectedApi, recipe);
+  payload.apiSchema = selectedSchema;
   return payload;
 }
 
@@ -823,9 +843,9 @@ function buildNonJsonResponseSchema(request) {
     schema.contentMediaType = contentType.split(";")[0];
   }
 
-  const preview = shortenText(body, 500);
-  if (preview) {
-    schema.examples = [preview];
+  const examples = collectSchemaExamples([body]);
+  if (examples.length > 0) {
+    schema.examples = examples;
   }
 
   return schema;
@@ -859,7 +879,7 @@ function normalizeSchemaShape(schema, sampleValue, contentType = "") {
   }
 
   if (normalized.preview && !normalized.examples) {
-    normalized.examples = [normalized.preview];
+    normalized.examples = collectSchemaExamples([normalized.preview]);
   }
   delete normalized.preview;
 
@@ -915,7 +935,7 @@ function normalizeSchemaShape(schema, sampleValue, contentType = "") {
   }
 
   if (!normalized.examples) {
-    normalized.examples = [sampleValue];
+    normalized.examples = collectSchemaExamples([sampleValue]);
   }
   if (!normalized.type) {
     normalized.type = Number.isInteger(sampleValue) ? "integer" : typeof sampleValue;
@@ -976,8 +996,56 @@ function buildDataShape(value, depth = 0) {
 
   return {
     type: Number.isInteger(value) ? "integer" : typeof value,
-    examples: [value]
+    examples: collectSchemaExamples([value])
   };
+}
+
+function collectSchemaExamples(values) {
+  const unique = [];
+  const seen = new Set();
+
+  for (const value of values || []) {
+    if (unique.length >= MAX_SCHEMA_EXAMPLES_PER_FIELD) {
+      break;
+    }
+    const sanitized = sanitizeSchemaExample(value);
+    if (sanitized === undefined) {
+      continue;
+    }
+    const key = JSON.stringify(sanitized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(sanitized);
+  }
+
+  return unique;
+}
+
+function sanitizeSchemaExample(value) {
+  if (value == null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  const text = String(value).trim();
+  if (!text) {
+    return "";
+  }
+
+  if (looksLikeBase64Payload(text)) {
+    return "base64";
+  }
+
+  if (text.length > 240 && /^[A-Za-z0-9+/=._:-]+$/.test(text)) {
+    return "base64";
+  }
+
+  return shortenText(text, 240);
+}
+
+function looksLikeBase64Payload(value) {
+  return /^data:[^;]+;base64,/i.test(value) || /^[A-Za-z0-9+/=\s]{160,}$/.test(value);
 }
 
 function formatCapturedAt(value) {

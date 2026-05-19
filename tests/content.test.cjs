@@ -25,7 +25,9 @@ function createContentExports() {
       "formatCandidateMatchPercent",
       "formatCandidateRequestTitle",
       "formatCandidateRequestSummary",
-      "truncateText"
+      "truncateText",
+      "resolveApiSelection",
+      "buildApiResolution"
     ],
     replacements: [["void initializeCapture();", ""]],
     globals: {
@@ -114,5 +116,89 @@ describe("content capture helpers", () => {
     const url = "https://www.youtube.com/api/timedtext?v=inQuNn3eggk&ei=hokDapu-ILbN-_UPw7D76A8&hl=ru&fmt=json3&kind=asr&c=WEB";
     expect(content.formatCandidateRequestTitle("get", url)).toBe("GET www.youtube.com/api/timedtext");
     expect(content.formatCandidateRequestSummary(url)).toBe("Параметры: v=inQuNn3eggk · hl=ru · fmt=json3 · kind=asr · ещё 2");
+  });
+
+  it("resolveApiSelection picks a confident single winner", () => {
+    const result = content.resolveApiSelection([
+      {
+        id: "api-1",
+        score: 21,
+        timestamp: 2,
+        analysis: { strongBindingCount: 2, visibleMatchCount: 1, evidenceCount: 1 }
+      },
+      {
+        id: "api-2",
+        score: 13,
+        timestamp: 1,
+        analysis: { strongBindingCount: 0, visibleMatchCount: 0, evidenceCount: 0 }
+      }
+    ]);
+
+    expect(result.strategy).toBe("single-best-match");
+    expect(result.requiresManualChoice).toBe(false);
+    expect(result.autoSelectedIds).toEqual(["api-1"]);
+  });
+
+  it("resolveApiSelection keeps multiple strong sources when widget depends on several apis", () => {
+    const result = content.resolveApiSelection([
+      {
+        id: "api-1",
+        score: 24,
+        timestamp: 3,
+        method: "GET",
+        url: "https://site.test/api/one",
+        analysis: { strongBindingCount: 1, visibleMatchCount: 1, evidenceCount: 1 },
+        reasons: { factMatchCount: 2 }
+      },
+      {
+        id: "api-2",
+        score: 22,
+        timestamp: 2,
+        method: "GET",
+        url: "https://site.test/api/two",
+        analysis: { strongBindingCount: 1, visibleMatchCount: 1, evidenceCount: 0 },
+        reasons: { factMatchCount: 2 }
+      },
+      {
+        id: "api-3",
+        score: 21.5,
+        timestamp: 1,
+        method: "GET",
+        url: "https://site.test/api/three",
+        analysis: { strongBindingCount: 1, visibleMatchCount: 0, evidenceCount: 0 },
+        reasons: { factMatchCount: 1 }
+      }
+    ]);
+
+    expect(result.strategy).toBe("multi-source");
+    expect(result.requiresManualChoice).toBe(false);
+    expect(result.autoSelectedIds).toEqual(["api-1", "api-2", "api-3"]);
+  });
+
+  it("resolveApiSelection asks for manual review when leaders are too close", () => {
+    const result = content.resolveApiSelection([
+      {
+        id: "api-1",
+        score: 16,
+        timestamp: 2,
+        method: "GET",
+        url: "https://site.test/api/one",
+        analysis: { strongBindingCount: 0, visibleMatchCount: 1, evidenceCount: 0 },
+        reasons: { factMatchCount: 1 }
+      },
+      {
+        id: "api-2",
+        score: 15,
+        timestamp: 1,
+        method: "GET",
+        url: "https://site.test/api/two",
+        analysis: { strongBindingCount: 0, visibleMatchCount: 1, evidenceCount: 0 },
+        reasons: { factMatchCount: 1 }
+      }
+    ]);
+
+    expect(result.strategy).toBe("manual-review");
+    expect(result.requiresManualChoice).toBe(true);
+    expect(result.selectedCandidates.map((item) => item.id)).toEqual(["api-1", "api-2"]);
   });
 });

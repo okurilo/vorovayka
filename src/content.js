@@ -3,6 +3,8 @@ const ARMED_ORIGINS_KEY = "armedOrigins";
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_REF_MARK = "__widgetronCaptureRef";
+const CAPTURE_MODE_NORMAL = "normal";
+const CAPTURE_MODE_PRO = "pro";
 const FULL_CAPTURE_KEY = "active";
 const MAX_HTML_CHARS = 50 * 1024;
 const MAX_TEXT_CHARS = 12 * 1024;
@@ -19,6 +21,9 @@ const MAX_REQUEST_FACTS = 180;
 const MAX_BINDINGS = 160;
 const MAX_CANDIDATES = 20;
 const MAX_PRESELECTED_CANDIDATES = 6;
+const MAX_OPENAPI_SCHEMA_DEPTH = 8;
+const MAX_OPENAPI_SCHEMA_PROPERTIES = 64;
+const MAX_SCHEMA_EXAMPLES_PER_FIELD = 3;
 const MAX_API_DEPENDENCIES = 16;
 const MAX_EVIDENCE_TIMELINE_EVENTS = 80;
 const MAX_ANALYSIS_DIAGNOSTICS = 18;
@@ -49,6 +54,10 @@ const STORAGE_PROFILES = {
 };
 const POST_CLICK_WINDOW_MS = 1500;
 const DOM_RENDER_EVIDENCE_WINDOW_MS = 5000;
+const AUTO_SELECT_MIN_SCORE = 14;
+const AUTO_SELECT_MIN_GAP = 4;
+const AUTO_SELECT_MULTI_SCORE_GAP = 3;
+const AUTO_SELECT_MAX_MULTI = 3;
 const UI_ROOT_ID = "widgetron-root";
 const PREVIEW_STYLE_PROPS = [
   "display",
@@ -147,6 +156,7 @@ let hoverEl = null;
 let selectedEl = null;
 let selectionStartedAt = 0;
 let interactionTimestamp = 0;
+let currentCaptureMode = CAPTURE_MODE_NORMAL;
 let finalizeTimer = null;
 let hintTimer = null;
 let uiRoot = null;
@@ -158,16 +168,17 @@ let mutationSeq = 0;
 window.addEventListener("message", handlePageMessage);
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "START_CAPTURE") {
+    currentCaptureMode = normalizeCaptureMode(message.captureMode);
     if (!captureEnabled) {
       ensureUi();
-      renderHint("Захват сети на этом домене выключен. Включите его в popup.", {
+      renderHint("Сначала включите сбор на сайте в popup.", {
         duration: 3200,
         destroyWhenHidden: true
       });
       return;
     }
 
-    startSelection();
+    startSelection(currentCaptureMode);
   }
 });
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -195,6 +206,10 @@ async function initializeCapture() {
     injectPageScript();
     startMutationTrace();
   }
+}
+
+function normalizeCaptureMode(value) {
+  return value === CAPTURE_MODE_PRO ? CAPTURE_MODE_PRO : CAPTURE_MODE_NORMAL;
 }
 
 function injectPageScript() {
@@ -382,17 +397,18 @@ function normalizeNetworkRecord(payload) {
   };
 }
 
-function startSelection() {
+function startSelection(captureMode = CAPTURE_MODE_NORMAL) {
   if (selectionActive) {
     return;
   }
 
   ensureUi();
+  currentCaptureMode = normalizeCaptureMode(captureMode);
   selectionActive = true;
   selectedEl = null;
   hoverEl = null;
   selectionStartedAt = Date.now();
-  renderHint("Выберите элемент на странице. Esc — отмена.", { persistent: true });
+  renderHint("Наведите и выберите нужный блок. Esc — отмена.", { persistent: true });
   document.addEventListener("pointermove", onPointerMove, true);
   document.addEventListener("click", onClickCapture, true);
   document.addEventListener("keydown", onKeyDown, true);
@@ -438,17 +454,17 @@ function onClickCapture(event) {
   selectedEl = target;
   interactionTimestamp = Date.now();
   stopSelection();
-  renderProgress("Готовлю анализ выбранного элемента...", 8);
+  renderProgress("Собираю данные...", 8);
 
   clearTimeout(finalizeTimer);
   finalizeTimer = window.setTimeout(async () => {
     try {
       const payload = await buildCapturePayload(target, renderProgress);
       hideHint();
-      showSelectionDialog(payload);
+      await handleCapturePayload(payload);
     } catch (error) {
       console.warn("Failed to build capture payload", error);
-      renderHint("Не удалось собрать анализ элемента.", {
+      renderHint("Не удалось собрать данные для этого блока.", {
         duration: 3200,
         destroyWhenHidden: true
       });
@@ -480,27 +496,28 @@ function getSelectableTarget(target) {
 }
 
 async function buildCapturePayload(target, reportProgress = () => {}) {
-  reportProgress("Снимаю DOM выбранного элемента...", 16);
+  reportProgress("Собираю данные...", 16);
   await yieldToBrowser();
 
   const dom = captureDomSnapshot(target, []);
-  reportProgress("Извлекаю видимые значения из DOM...", 32);
+  reportProgress("Проверяю содержимое блока...", 32);
   await yieldToBrowser();
   dom.facts = extractDomFacts(target);
 
-  reportProgress(`Сравниваю с API-ответами: 0/${networkBuffer.length}`, 48);
+  reportProgress(`Ищу связанные API: 0/${networkBuffer.length}`, 48);
   await yieldToBrowser();
   const candidates = await rankRequests(dom, interactionTimestamp, reportProgress);
 
-  reportProgress("Собираю trace изменений DOM...", 82);
+  reportProgress("Собираю результат...", 82);
   await yieldToBrowser();
   const mutationTrace = collectRelevantMutationTrace(dom.facts || []);
 
-  reportProgress("Готовлю список API-кандидатов...", 94);
+  reportProgress("Готовлю список API...", 94);
   await yieldToBrowser();
 
   return {
     createdAt: new Date().toISOString(),
+    captureMode: currentCaptureMode,
     page: {
       url: location.href,
       title: document.title
@@ -512,6 +529,113 @@ async function buildCapturePayload(target, reportProgress = () => {}) {
     dom,
     mutationTrace,
     networkCandidates: candidates
+  };
+}
+
+async function handleCapturePayload(payload) {
+  const captureMode = normalizeCaptureMode(payload.captureMode);
+  if (captureMode === CAPTURE_MODE_PRO) {
+    showSelectionDialog(payload, {
+      captureMode
+    });
+    return;
+  }
+
+  const resolution = resolveApiSelection(payload.networkCandidates || []);
+  if (resolution.requiresManualChoice) {
+    showSelectionDialog(payload, {
+      captureMode,
+      resolution
+    });
+    return;
+  }
+
+  setPersistentProgressState("Готовлю результат...", 88);
+  await persistLatestCaptureFromCandidates(
+    payload,
+    resolution.selectedCandidates,
+    {
+      captureMode,
+      apiResolution: resolution
+    },
+    (text, percent) => {
+      setPersistentProgressState(text, percent);
+    }
+  );
+  setPersistentSuccessState("Данные сохранены в браузерный контекст Виджетрона.");
+}
+
+function resolveApiSelection(candidates = []) {
+  const sorted = (candidates || [])
+    .slice()
+    .sort((a, b) => b.score - a.score || b.timestamp - a.timestamp);
+  const top = sorted[0] || null;
+  const second = sorted[1] || null;
+
+  if (!top || top.score < AUTO_SELECT_MIN_SCORE) {
+    return buildApiResolution("dom-only", [], sorted, false);
+  }
+
+  const strongCandidates = sorted.filter((candidate) => (
+    Number(candidate.analysis?.strongBindingCount || 0) > 0 &&
+    candidate.score >= top.score - AUTO_SELECT_MULTI_SCORE_GAP
+  ));
+  if (strongCandidates.length >= 2) {
+    return buildApiResolution(
+      "multi-source",
+      strongCandidates.slice(0, AUTO_SELECT_MAX_MULTI),
+      sorted,
+      false
+    );
+  }
+
+  const topGap = top.score - Number(second?.score || 0);
+  const topStrongEnough = (
+    Number(top.analysis?.strongBindingCount || 0) >= 2 ||
+    Number(top.analysis?.visibleMatchCount || 0) >= 2 ||
+    topGap >= AUTO_SELECT_MIN_GAP
+  );
+  if (topStrongEnough) {
+    return buildApiResolution("single-best-match", [top], sorted, false);
+  }
+
+  return buildApiResolution(
+    "manual-review",
+    sorted.slice(0, Math.min(MAX_PRESELECTED_CANDIDATES, sorted.length)),
+    sorted,
+    true
+  );
+}
+
+function buildApiResolution(strategy, selectedCandidates, allCandidates, requiresManualChoice) {
+  const selected = (selectedCandidates || []).filter(Boolean);
+  const sorted = (allCandidates || []).filter(Boolean);
+  return {
+    strategy,
+    requiresManualChoice: Boolean(requiresManualChoice),
+    selectedCandidates: selected,
+    autoSelectedIds: selected.map((candidate) => candidate.id),
+    ambiguousCandidates: sorted
+      .slice(0, Math.min(4, sorted.length))
+      .filter((candidate) => !selected.some((item) => item.id === candidate.id))
+      .map(compactCandidateForResolution),
+    selectedSummaries: selected.map(compactCandidateForResolution)
+  };
+}
+
+function compactCandidateForResolution(candidate = {}) {
+  return {
+    id: candidate.id,
+    method: candidate.method || "GET",
+    url: candidate.url || "",
+    score: candidate.score || 0,
+    matchPercent: formatCandidateMatchPercent(candidate.score || 0),
+    signals: {
+      factMatchCount: Number(candidate.reasons?.factMatchCount || 0),
+      visibleMatchCount: Number(candidate.analysis?.visibleMatchCount || 0),
+      strongBindingCount: Number(candidate.analysis?.strongBindingCount || 0),
+      evidenceCount: Number(candidate.analysis?.evidenceCount || 0)
+    }
   };
 }
 
@@ -1097,7 +1221,8 @@ async function rankRequests(domSnapshot, eventTs, reportProgress = () => {}) {
     const textMatch = normalizedDomText && record.responseBody
       ? normalizeText(record.responseBody).includes(normalizedDomText.slice(0, 160))
       : false;
-    const factMatch = scoreRequestAgainstFacts(record, domFacts);
+    const analysis = analyzeRequestCandidate(record, domFacts, domText, mutationBuffer);
+    const factMatch = analysis.factMatch;
 
     if (isAfterInteraction) {
       score += 5;
@@ -1109,27 +1234,36 @@ async function rankRequests(domSnapshot, eventTs, reportProgress = () => {}) {
       score -= 2;
     }
     if (textMatch) {
-      score += 5;
+      score += 4;
     }
     if (factMatch.count > 0) {
-      score += Math.min(14, 6 + factMatch.count * 2);
+      score += Math.min(10, 4 + factMatch.count * 1.5);
     }
+    score += Math.min(24, analysis.strongBindingCount * 6);
+    score += Math.min(8, analysis.mediumBindingCount * 2);
+    score += Math.min(6, analysis.visibleMatchCount * 2);
+    score += Math.min(6, analysis.evidenceCount * 2);
+    score += Math.min(4, analysis.semanticOverlapCount * 2);
 
     scored.push({
       ...record,
-      score,
+      score: Math.round(score * 100) / 100,
+      analysis,
       reasons: {
         afterInteraction: isAfterInteraction,
         recent: isRecent,
         textMatch,
         factMatch: factMatch.count > 0,
-        factMatchCount: factMatch.count
+        factMatchCount: factMatch.count,
+        visibleMatchCount: analysis.visibleMatchCount,
+        strongBindingCount: analysis.strongBindingCount,
+        evidenceCount: analysis.evidenceCount
       }
     });
 
     if (index % 3 === 0 || index === networkBuffer.length - 1) {
       reportProgress(
-        `Сравниваю с API-ответами: ${index + 1}/${networkBuffer.length}`,
+        `Ищу связанные API: ${index + 1}/${networkBuffer.length}`,
         48 + Math.round(((index + 1) / Math.max(1, networkBuffer.length)) * 28)
       );
       await yieldToBrowser();
@@ -1164,15 +1298,41 @@ async function rankRequests(domSnapshot, eventTs, reportProgress = () => {}) {
   }));
 }
 
-function scoreRequestAgainstFacts(record, domFacts) {
+function analyzeRequestCandidate(record, domFacts, domText, mutationTrace) {
+  const responseFacts = extractResponseFacts(record, 0);
+  const factMatch = scoreRequestAgainstFacts(record, domFacts, responseFacts);
+  const visibleMatches = findVisibleDataMatches(domText, record);
+  const bindings = buildProvenanceBindings(domFacts, responseFacts, [record], mutationTrace || []);
+  const strongBindingCount = bindings.filter((binding) => binding.confidence >= 0.78).length;
+  const mediumBindingCount = bindings.filter((binding) => binding.confidence >= 0.55).length;
+  const evidenceCount = bindings.reduce((count, binding) => count + (binding.evidence?.length || 0), 0);
+  const semanticOverlapCount = getSharedSemanticGroups([
+    domText,
+    ...domFacts.map((fact) => [fact.value, fact.context?.nearbyLabel].filter(Boolean).join(" "))
+  ].join(" "), [
+    record.url,
+    ...responseFacts.slice(0, 20).map((fact) => [fact.key, fact.parentObjectPath].filter(Boolean).join(" "))
+  ].join(" ")).size;
+
+  return {
+    factMatch,
+    visibleMatchCount: visibleMatches.length,
+    strongBindingCount,
+    mediumBindingCount,
+    evidenceCount,
+    semanticOverlapCount
+  };
+}
+
+function scoreRequestAgainstFacts(record, domFacts, responseFacts = null) {
   if (!domFacts.length) {
     return { count: 0 };
   }
 
-  const responseFacts = extractResponseFacts(record, 0);
-  const responseKeys = new Set(responseFacts.map((fact) => `${fact.kind}:${fact.normalizedValue}`));
+  const facts = responseFacts || extractResponseFacts(record, 0);
+  const responseKeys = new Set(facts.map((fact) => `${fact.kind}:${fact.normalizedValue}`));
   const numericKeys = new Set(
-    responseFacts
+    facts
       .filter((fact) => ["number", "currency", "percent"].includes(fact.kind))
       .map((fact) => fact.normalizedValue)
   );
@@ -1189,7 +1349,7 @@ function scoreRequestAgainstFacts(record, domFacts) {
       return;
     }
 
-    if (fact.kind === "duration" && hasComparableDurationNumber(fact, responseFacts)) {
+    if (fact.kind === "duration" && hasComparableDurationNumber(fact, facts)) {
       count += 1;
     }
   });
@@ -1197,20 +1357,28 @@ function scoreRequestAgainstFacts(record, domFacts) {
   return { count };
 }
 
-function showSelectionDialog(payload) {
+function showSelectionDialog(payload, options = {}) {
   ensureUi();
   closeModal();
+  const captureMode = normalizeCaptureMode(options.captureMode || payload.captureMode);
+  const resolution = options.resolution || null;
 
   modal = document.createElement("div");
   modal.className = "widgetron-modal";
 
   const heading = document.createElement("div");
   heading.className = "widgetron-modal__heading";
-  heading.textContent = "Выберите запросы для рецепта виджета";
+  heading.textContent = captureMode === CAPTURE_MODE_PRO
+    ? "Выберите нужные API"
+    : "Выберите, что сохранить";
 
   const summary = document.createElement("div");
   summary.className = "widgetron-modal__summary";
-  summary.textContent = `${payload.networkCandidates.length} запросов доступны для проверки. Наиболее подходящие уже отмечены, а рядом показан процент совпадения с выбранным элементом.`;
+  summary.textContent = captureMode === CAPTURE_MODE_PRO
+    ? `${payload.networkCandidates.length} запросов подходят для этого блока. Самые вероятные уже отмечены.`
+    : resolution?.selectedSummaries?.length
+      ? "Система нашла несколько возможных источников. Отметьте те, которые относятся к этому блоку."
+      : `${payload.networkCandidates.length} запросов доступны для выбора.`;
 
   const list = document.createElement("div");
   list.className = "widgetron-modal__list";
@@ -1218,7 +1386,7 @@ function showSelectionDialog(payload) {
   if (payload.networkCandidates.length === 0) {
     const empty = document.createElement("div");
     empty.className = "widgetron-modal__empty";
-    empty.textContent = "Подходящих JSON/text запросов не найдено. Можно сохранить только DOM и HTML-превью.";
+    empty.textContent = "Подходящих API не найдено. Можно сохранить только сам блок.";
     list.appendChild(empty);
   }
 
@@ -1228,7 +1396,8 @@ function showSelectionDialog(payload) {
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = Boolean(candidate.preselected);
+    checkbox.checked = resolution?.selectedSummaries?.some((item) => item.id === candidate.id)
+      || Boolean(candidate.preselected);
     checkbox.dataset.index = String(index);
 
     const meta = document.createElement("div");
@@ -1238,7 +1407,7 @@ function showSelectionDialog(payload) {
     const requestSummary = formatCandidateRequestSummary(candidate.url);
     meta.innerHTML = [
       `<strong title="${escapeHtml(candidate.url || "")}">${escapeHtml(requestTitle)}</strong>`,
-      `<span>Статус ${candidate.status || "?"} · match ${matchPercent}% · score ${candidate.score} · ${escapeHtml(candidate.contentType || "unknown")}</span>`,
+      `<span>Статус ${candidate.status || "?"} · совпадение ${matchPercent}% · ${escapeHtml(candidate.contentType || "unknown")}</span>`,
       `<small>${escapeHtml(requestSummary)}</small>`,
       `<small>${escapeHtml(candidate.responsePreview || "Короткое превью ответа недоступно.")}</small>`
     ].join("");
@@ -1259,9 +1428,12 @@ function showSelectionDialog(payload) {
   const openReceiverButton = document.createElement("button");
   openReceiverButton.textContent = "Открыть рабочую область";
   openReceiverButton.addEventListener("click", async () => {
-    setModalBusy(actions, progress, "Собираю cloneSpec...", 12);
+    setModalBusy(actions, progress, "Готовлю результат...", 12);
     try {
-      await persistLatestCapture(payload, list, (text, percent) => {
+      await persistLatestCapture(payload, list, {
+        captureMode,
+        apiResolution: resolution
+      }, (text, percent) => {
         setModalBusy(actions, progress, text, percent);
       });
       await chrome.runtime.sendMessage({ type: "OPEN_RECEIVER" });
@@ -1277,21 +1449,24 @@ function showSelectionDialog(payload) {
   });
 
   const saveButton = document.createElement("button");
-  saveButton.textContent = "Сохранить захват";
+  saveButton.textContent = captureMode === CAPTURE_MODE_PRO ? "Сохранить захват" : "Сохранить для Виджетрона";
   saveButton.addEventListener("click", async () => {
-    setModalBusy(actions, progress, "Собираю cloneSpec...", 12);
+    setModalBusy(actions, progress, "Готовлю результат...", 12);
     try {
-      await persistLatestCapture(payload, list, (text, percent) => {
+      await persistLatestCapture(payload, list, {
+        captureMode,
+        apiResolution: resolution
+      }, (text, percent) => {
         setModalBusy(actions, progress, text, percent);
       });
-      renderHint("Захват сохранён.", {
+      renderHint(captureMode === CAPTURE_MODE_PRO ? "Захват сохранён." : "Готово. Контекст сохранён.", {
         duration: 2200,
         destroyWhenHidden: true
       });
       closeModal();
     } catch (error) {
       console.warn("Failed to persist capture", error);
-      setModalBusy(actions, progress, "Не удалось сохранить захват.", 100, false);
+      setModalBusy(actions, progress, "Не удалось сохранить результат.", 100, false);
     }
   });
 
@@ -1302,7 +1477,10 @@ function showSelectionDialog(payload) {
     destroyUi();
   });
 
-  actions.append(openReceiverButton, saveButton, cancelButton);
+  if (captureMode === CAPTURE_MODE_PRO) {
+    actions.append(openReceiverButton);
+  }
+  actions.append(saveButton, cancelButton);
   footer.append(progress, actions);
   modal.append(heading, summary, list, footer);
   uiRoot.appendChild(modal);
@@ -1335,7 +1513,7 @@ function stripTransientFields(record) {
   };
 }
 
-async function persistLatestCapture(payload, list, reportProgress = () => {}) {
+async function persistLatestCapture(payload, list, options = {}, reportProgress = () => {}) {
   reportProgress("Читаю выбранные API-кандидаты...", 18);
   await yieldToBrowser();
 
@@ -1343,6 +1521,13 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
     .map((input) => payload.networkCandidates[Number(input.dataset.index)])
     .slice(0, MAX_CANDIDATES)
     .map(stripTransientFields);
+
+  return persistLatestCaptureFromCandidates(payload, selected, options, reportProgress);
+}
+
+async function persistLatestCaptureFromCandidates(payload, selected, options = {}, reportProgress = () => {}) {
+  const captureMode = normalizeCaptureMode(options.captureMode || payload.captureMode);
+  const apiResolution = finalizeApiResolution(options.apiResolution, selected);
 
   reportProgress("Строю граф происхождения данных...", 34);
   await yieldToBrowser();
@@ -1358,10 +1543,12 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
   await yieldToBrowser();
   const capture = {
     createdAt: payload.createdAt,
+    captureMode,
     page: payload.page,
     interaction: payload.interaction,
     dom: payload.dom,
     mutationTrace: payload.mutationTrace || [],
+    apiResolution,
     elementRecipe,
     cloneSpec: elementRecipe,
     network: selected
@@ -1372,6 +1559,23 @@ async function persistLatestCapture(payload, list, reportProgress = () => {}) {
   reportProgress("Планирую автоочистку временных данных...", 98);
   await yieldToBrowser();
   await chrome.runtime.sendMessage({ type: "SCHEDULE_CAPTURE_EXPIRY" });
+}
+
+function finalizeApiResolution(baseResolution = null, selected = []) {
+  const selectedCandidates = (selected || []).filter(Boolean);
+  if (!baseResolution) {
+    return buildApiResolution("manual-review", selectedCandidates, selectedCandidates, false);
+  }
+
+  return {
+    strategy: baseResolution.requiresManualChoice
+      ? (selectedCandidates.length > 1 ? "manual-multi" : "manual-single")
+      : baseResolution.strategy || "manual-review",
+    requiresManualChoice: false,
+    autoSelectedIds: (baseResolution.autoSelectedIds || []).slice(),
+    selectedSummaries: selectedCandidates.map(compactCandidateForResolution),
+    ambiguousCandidates: (baseResolution.ambiguousCandidates || []).slice()
+  };
 }
 
 async function persistCaptureToStorage(capture, reportProgress = () => {}) {
@@ -1497,7 +1701,7 @@ function compactCaptureBundle(bundle, limits) {
     return null;
   }
 
-  return {
+  const compactBundle = {
     ...bundle,
     dom: {
       ...(bundle.dom || {}),
@@ -1505,16 +1709,58 @@ function compactCaptureBundle(bundle, limits) {
       previewHtml: truncateText(String(bundle.dom?.previewHtml || ""), limits.previewHtmlChars),
       cleanHtml: truncateText(String(bundle.dom?.cleanHtml || ""), limits.domHtmlChars),
       rawHtml: truncateText(String(bundle.dom?.rawHtml || ""), limits.domHtmlChars)
-    },
-    api: (bundle.api || []).map((record) => ({
+    }
+  };
+
+  if (Array.isArray(bundle.api)) {
+    compactBundle.api = (bundle.api || []).map((record) => ({
       ...compactNetworkRecordForStorage(record, limits),
       responsePreview: record.responsePreview || buildResponsePreview(record.responseBody, record.contentType)
-    }))
-  };
+    }));
+  }
+
+  if (Array.isArray(bundle.apiSchema)) {
+    compactBundle.apiSchema = bundle.apiSchema;
+  }
+
+  if (bundle.apiResolution) {
+    compactBundle.apiResolution = bundle.apiResolution;
+  }
+
+  return compactBundle;
 }
 
 function buildCaptureBundle(capture) {
   const dom = capture?.dom || {};
+  const captureMode = normalizeCaptureMode(capture?.captureMode);
+  const apiResolution = normalizeApiResolutionMetadata(capture?.apiResolution);
+  const apiSchema = buildApiSchemaExport(capture?.network || [], capture?.cloneSpec || capture?.elementRecipe || {});
+
+  if (captureMode === CAPTURE_MODE_NORMAL) {
+    return {
+      specVersion: "widgetron.capture-bundle.v1",
+      capturedAt: capture?.createdAt || "",
+      page: {
+        title: capture?.page?.title || "",
+        url: capture?.page?.url || ""
+      },
+      selection: {
+        type: capture?.interaction?.type || "",
+        timestamp: capture?.interaction?.timestamp || 0,
+        mode: captureMode
+      },
+      dom: {
+        tagName: dom.tagName || "",
+        selector: dom.selector || "",
+        textPreview: truncateText(String(dom.innerText || ""), 500),
+        rect: dom.rect || {},
+        cleanHtml: dom.cleanHtml || ""
+      },
+      apiSchema,
+      apiResolution
+    };
+  }
+
   return {
     specVersion: "widgetron.capture-bundle.v1",
     capturedAt: capture?.createdAt || "",
@@ -1524,7 +1770,8 @@ function buildCaptureBundle(capture) {
     },
     selection: {
       type: capture?.interaction?.type || "",
-      timestamp: capture?.interaction?.timestamp || 0
+      timestamp: capture?.interaction?.timestamp || 0,
+      mode: captureMode
     },
     dom: {
       tagName: dom.tagName || "",
@@ -1535,6 +1782,7 @@ function buildCaptureBundle(capture) {
       cleanHtml: dom.cleanHtml || "",
       rawHtml: dom.rawHtml || dom.outerHTML || ""
     },
+    apiResolution,
     api: (capture?.network || []).map((record) => ({
       id: record.id,
       requestId: record.id,
@@ -1559,12 +1807,17 @@ function buildCaptureSummary(bundle) {
   }
 
   const textPreview = truncateText(String(bundle.dom?.textPreview || ""), 80);
+  const apiCount = Array.isArray(bundle.api)
+    ? bundle.api.length
+    : Array.isArray(bundle.apiSchema)
+      ? bundle.apiSchema.length
+      : 0;
   return {
     capturedAt: bundle.capturedAt || "",
     tagName: bundle.dom?.tagName || "",
     selector: bundle.dom?.selector || "",
     textPreview,
-    apiCount: Array.isArray(bundle.api) ? bundle.api.length : 0,
+    apiCount,
     pageUrl: bundle.page?.url || ""
   };
 }
@@ -2836,11 +3089,9 @@ function getHeaderValue(headers = {}, name) {
 
 function extractResponseShape(request) {
   const parsed = parseJsonBody(request.responseBody, request.contentType);
-  if (parsed == null) {
-    return {
-      type: request.responseBody ? "text" : "empty",
-      preview: truncateText(request.responseBody || "", 500)
-    };
+  const rawBody = String(request.responseBody || "").trim();
+  if (parsed == null && rawBody !== "null") {
+    return buildNonJsonResponseSchema(request);
   }
 
   return buildDataShape(parsed);
@@ -2869,7 +3120,8 @@ function parseJsonBody(body, contentType = "") {
 function buildDataShape(value, depth = 0) {
   if (value === null) {
     return {
-      nullable: true
+      type: "null",
+      examples: [null]
     };
   }
 
@@ -2877,13 +3129,13 @@ function buildDataShape(value, depth = 0) {
     const firstMeaningfulItem = value.find((item) => item != null);
     return {
       type: "array",
-      items: depth >= 4 || firstMeaningfulItem == null ? {} : buildDataShape(firstMeaningfulItem, depth + 1)
+      items: depth >= MAX_OPENAPI_SCHEMA_DEPTH || firstMeaningfulItem == null ? {} : buildDataShape(firstMeaningfulItem, depth + 1)
     };
   }
 
   if (value && typeof value === "object") {
-    const keys = Object.keys(value).slice(0, 16);
-    if (depth >= 4) {
+    const keys = Object.keys(value).slice(0, MAX_OPENAPI_SCHEMA_PROPERTIES);
+    if (depth >= MAX_OPENAPI_SCHEMA_DEPTH) {
       return {
         type: "object",
         properties: Object.fromEntries(keys.map((key) => [key, {}]))
@@ -2897,7 +3149,208 @@ function buildDataShape(value, depth = 0) {
   }
 
   return {
-    type: Number.isInteger(value) ? "integer" : typeof value
+    type: Number.isInteger(value) ? "integer" : typeof value,
+    examples: collectSchemaExamples([value])
+  };
+}
+
+function buildNonJsonResponseSchema(request) {
+  const body = request?.responseBody;
+  const contentType = String(request?.contentType || "").trim().toLowerCase();
+  if (!body) {
+    return {};
+  }
+
+  const schema = {
+    type: "string"
+  };
+
+  if (contentType) {
+    schema.contentMediaType = contentType.split(";")[0];
+  }
+
+  const examples = collectSchemaExamples([body]);
+  if (examples.length > 0) {
+    schema.examples = examples;
+  }
+
+  return schema;
+}
+
+function buildApiSchemaExport(apiRecords, recipe = {}) {
+  return (apiRecords || []).map((item, index) => ({
+    id: item.id || item.requestId || `api-${index + 1}`,
+    method: item.method || "GET",
+    url: item.url || "",
+    status: item.status || 0,
+    contentType: item.contentType || "",
+    responseSchema: getApiResponseSchema(item, recipe, index)
+  }));
+}
+
+function getApiResponseSchema(request, recipe = {}, index = 0) {
+  const requestId = request?.id || request?.requestId || `request-${index + 1}`;
+  const recipeStep = (recipe.apiSequence || []).find((step) => (
+    String(step?.requestId || "") === String(requestId)
+  ));
+  if (recipeStep?.response?.shape) {
+    const parsed = parseJsonBody(request?.responseBody, request?.contentType);
+    const rawBody = String(request?.responseBody || "").trim();
+    const sampleValue = parsed !== null || rawBody === "null"
+      ? parsed
+      : undefined;
+    return normalizeSchemaShape(recipeStep.response.shape, sampleValue, request?.contentType);
+  }
+  return extractResponseShape(request);
+}
+
+function normalizeSchemaShape(schema, sampleValue, contentType = "") {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    if (sampleValue !== undefined) {
+      return buildDataShape(sampleValue);
+    }
+    return {};
+  }
+
+  const normalized = { ...schema };
+
+  if (normalized.nullable === true) {
+    if (typeof normalized.type === "string" && normalized.type !== "null") {
+      normalized.type = [normalized.type, "null"];
+    } else if (!normalized.type) {
+      normalized.type = "null";
+    }
+    delete normalized.nullable;
+  }
+
+  if (normalized.type === "text") {
+    normalized.type = "string";
+  }
+
+  if (normalized.type === "empty") {
+    delete normalized.type;
+  }
+
+  if (normalized.preview && !normalized.examples) {
+    normalized.examples = collectSchemaExamples([normalized.preview]);
+  }
+  delete normalized.preview;
+
+  if (normalized.type === "string" && !normalized.contentMediaType) {
+    const mediaType = String(contentType || "").trim().toLowerCase().split(";")[0];
+    if (mediaType && mediaType !== "application/json") {
+      normalized.contentMediaType = mediaType;
+    }
+  }
+
+  if (sampleValue === undefined) {
+    return normalized;
+  }
+
+  if (sampleValue === null) {
+    if (!normalized.examples) {
+      normalized.examples = [null];
+    }
+    if (!normalized.type) {
+      normalized.type = "null";
+    }
+    return normalized;
+  }
+
+  if (Array.isArray(sampleValue)) {
+    if (!normalized.type) {
+      normalized.type = "array";
+    }
+    delete normalized.examples;
+    const firstMeaningfulItem = sampleValue.find((item) => item != null);
+    if (normalized.items && firstMeaningfulItem !== undefined) {
+      normalized.items = normalizeSchemaShape(normalized.items, firstMeaningfulItem);
+    }
+    return normalized;
+  }
+
+  if (sampleValue && typeof sampleValue === "object") {
+    if (!normalized.type) {
+      normalized.type = "object";
+    }
+    const keys = Object.keys(sampleValue).slice(0, MAX_OPENAPI_SCHEMA_PROPERTIES);
+    delete normalized.examples;
+    if (!normalized.properties) {
+      normalized.properties = {};
+    }
+    for (const key of keys) {
+      normalized.properties[key] = normalizeSchemaShape(
+        normalized.properties[key] || {},
+        sampleValue[key]
+      );
+    }
+    return normalized;
+  }
+
+  if (!normalized.examples) {
+    normalized.examples = collectSchemaExamples([sampleValue]);
+  }
+  if (!normalized.type) {
+    normalized.type = Number.isInteger(sampleValue) ? "integer" : typeof sampleValue;
+  }
+  return normalized;
+}
+
+function collectSchemaExamples(values) {
+  const unique = [];
+  const seen = new Set();
+
+  for (const value of values || []) {
+    if (unique.length >= MAX_SCHEMA_EXAMPLES_PER_FIELD) {
+      break;
+    }
+    const sanitized = sanitizeSchemaExample(value);
+    if (sanitized === undefined) {
+      continue;
+    }
+    const key = JSON.stringify(sanitized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(sanitized);
+  }
+
+  return unique;
+}
+
+function sanitizeSchemaExample(value) {
+  if (value == null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  const text = String(value).trim();
+  if (!text) {
+    return "";
+  }
+
+  if (looksLikeBase64Payload(text)) {
+    return "base64";
+  }
+
+  if (text.length > 240 && /^[A-Za-z0-9+/=._:-]+$/.test(text)) {
+    return "base64";
+  }
+
+  return truncateText(text, 240);
+}
+
+function looksLikeBase64Payload(value) {
+  return /^data:[^;]+;base64,/i.test(value) || /^[A-Za-z0-9+/=\s]{160,}$/.test(value);
+}
+
+function normalizeApiResolutionMetadata(apiResolution = {}) {
+  return {
+    strategy: apiResolution.strategy || "dom-only",
+    autoSelectedIds: (apiResolution.autoSelectedIds || []).slice(0, AUTO_SELECT_MAX_MULTI),
+    selected: (apiResolution.selectedSummaries || []).slice(0, AUTO_SELECT_MAX_MULTI),
+    ambiguousCandidates: (apiResolution.ambiguousCandidates || []).slice(0, 4),
+    requiresManualChoice: Boolean(apiResolution.requiresManualChoice)
   };
 }
 
@@ -3235,6 +3688,12 @@ function getSemanticGroups(text) {
   return groups;
 }
 
+function getSharedSemanticGroups(leftText, rightText) {
+  const leftGroups = getSemanticGroups(leftText);
+  const rightGroups = getSemanticGroups(rightText);
+  return new Set([...leftGroups].filter((group) => rightGroups.has(group)));
+}
+
 function findRenderEvidence(domFact, responseFact, request, mutationTrace) {
   if (!request.timestamp) {
     return [];
@@ -3441,12 +3900,12 @@ function ensureUi() {
         top: 16px;
         right: 16px;
         max-width: 360px;
-        padding: 12px 14px;
+        padding: 11px 13px;
         border: 1px solid rgba(117, 158, 211, 0.28);
         border-radius: 16px;
         background: rgba(255, 255, 255, 0.97);
         color: #173252;
-        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         z-index: 2147483646;
         box-shadow: 0 18px 40px rgba(34, 86, 146, 0.18);
       }
@@ -3460,7 +3919,7 @@ function ensureUi() {
         overflow: hidden;
         display: grid;
         grid-template-rows: auto auto minmax(0, 1fr) auto;
-        padding: 16px;
+        padding: 14px;
         border: 1px solid rgba(117, 158, 211, 0.24);
         border-radius: 22px;
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.97));
@@ -3470,20 +3929,21 @@ function ensureUi() {
         z-index: 2147483647;
       }
       #${UI_ROOT_ID} .widgetron-modal__heading {
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 800;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
       }
       #${UI_ROOT_ID} .widgetron-modal__summary,
       #${UI_ROOT_ID} .widgetron-modal__empty {
         color: #66809d;
-        margin-bottom: 12px;
+        margin-bottom: 10px;
         font-size: 12px;
+        line-height: 1.35;
       }
       #${UI_ROOT_ID} .widgetron-modal__progress {
         display: grid;
-        gap: 8px;
-        margin: 12px 0 0;
+        gap: 7px;
+        margin: 10px 0 0;
         color: #4c6b91;
       }
       #${UI_ROOT_ID} .widgetron-modal__progress[hidden] {
@@ -3491,10 +3951,10 @@ function ensureUi() {
       }
       #${UI_ROOT_ID} .widgetron-modal__list {
         display: grid;
-        gap: 6px;
+        gap: 5px;
         min-height: 0;
         overflow: auto;
-        padding-right: 4px;
+        padding-right: 2px;
         scrollbar-width: none;
         -ms-overflow-style: none;
       }
@@ -3506,9 +3966,9 @@ function ensureUi() {
       #${UI_ROOT_ID} .widgetron-modal__item {
         display: grid;
         grid-template-columns: 18px 1fr;
-        gap: 10px;
+        gap: 9px;
         align-items: start;
-        padding: 11px 12px;
+        padding: 9px 10px;
         border: 1px solid rgba(117, 158, 211, 0.22);
         border-radius: 16px;
         background: rgba(248, 251, 255, 0.96);
@@ -3526,29 +3986,29 @@ function ensureUi() {
         color: #66809d;
       }
       #${UI_ROOT_ID} .widgetron-modal__meta small {
-        margin-top: 4px;
+        margin-top: 3px;
         color: #2d496b;
-        font-size: 12px;
+        font-size: 11px;
         line-height: 1.35;
       }
       #${UI_ROOT_ID} .widgetron-modal__footer {
         position: sticky;
         bottom: 0;
-        margin: 12px -16px -16px;
-        padding: 12px 16px 16px;
+        margin: 10px -14px -14px;
+        padding: 10px 14px 14px;
         background: linear-gradient(180deg, rgba(243, 248, 255, 0.88), rgba(243, 248, 255, 0.98));
         border-top: 1px solid rgba(117, 158, 211, 0.18);
       }
       #${UI_ROOT_ID} .widgetron-modal__actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 10px;
+        gap: 7px;
+        margin-top: 8px;
       }
       #${UI_ROOT_ID} button {
         border: 0;
         border-radius: 14px;
-        padding: 10px 14px;
+        padding: 9px 13px;
         cursor: pointer;
         background: linear-gradient(135deg, #2a6fd5, #1d5cc0);
         color: #fff;
@@ -3633,6 +4093,17 @@ function renderProgress(text, percent = 0) {
     <div>${escapeHtml(text)}</div>
     <div class="widgetron-progress"><i style="width: ${Math.max(0, Math.min(100, percent))}%"></i></div>
   `;
+}
+
+function setPersistentProgressState(text, percent = 0) {
+  renderProgress(text, percent);
+}
+
+function setPersistentSuccessState(text) {
+  renderHint(text, {
+    duration: 2600,
+    destroyWhenHidden: true
+  });
 }
 
 function hideHint() {
