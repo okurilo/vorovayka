@@ -22,6 +22,7 @@ function createContentExports() {
       "normalizeNetworkRecord",
       "sanitizeHeaders",
       "buildResponsePreview",
+      "buildProcessApiEvent",
       "formatCandidateMatchPercent",
       "formatCandidateRequestTitle",
       "formatCandidateRequestSummary",
@@ -103,6 +104,40 @@ describe("content capture helpers", () => {
     expect(content.buildResponsePreview('[{"id":1,"name":"Ada"}]', "application/json")).toBe("array[1] · id, name");
     expect(content.buildResponsePreview('{"id":1,"name":"Ada"}', "application/json")).toContain("object:");
     expect(content.buildResponsePreview("plain text response", "text/plain")).toBe("plain text response");
+  });
+
+  it("buildProcessApiEvent prepares a process step from normalized network data", () => {
+    const event = content.buildProcessApiEvent({
+      id: "req-1",
+      url: "https://site.test/api/order",
+      method: "POST",
+      status: 200,
+      timestamp: 123,
+      contentType: "application/json",
+      requestBody: '{"itemId":1}',
+      responseBody: '{"ok":true,"id":42}',
+      requestHeaders: { "Content-Type": "application/json" },
+      responseHeaders: { ETag: "v1" },
+      initiatorStack: "stack",
+      bodyTooLarge: false
+    });
+
+    expect(event).toMatchObject({
+      id: "req-1",
+      type: "api",
+      method: "POST",
+      url: "https://site.test/api/order",
+      status: 200,
+      requestBody: '{"itemId":1}',
+      responsePreview: "object: ok, id · id: 42",
+      responseShape: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "integer" }
+        }
+      }
+    });
   });
 
   it("formatCandidateMatchPercent maps score to bounded percentage", () => {

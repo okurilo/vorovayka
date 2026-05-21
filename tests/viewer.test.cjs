@@ -7,6 +7,7 @@ function createViewerExports() {
       "getSelectedApiIds",
       "buildApiSchemaExport",
       "getApiResponseSchema",
+      "buildProcessExportPayload",
       "parseJsonBody",
       "buildDataShape",
       "extractResponseShape"
@@ -505,6 +506,139 @@ describe("viewer export helpers", () => {
       },
       apiSchema: bundle.apiSchema
     });
+  });
+
+  it("buildProcessExportPayload keeps API order and response schema for LLM restore", () => {
+    const payload = viewer.buildProcessExportPayload({
+      processId: "process-1",
+      name: "Оформление заявки",
+      status: "stopped",
+      origin: "https://site.test",
+      startedAt: "2026-05-15T10:00:00.000Z",
+      stoppedAt: "2026-05-15T10:01:00.000Z",
+      page: { url: "https://site.test/form", title: "Form" },
+      eventCount: 1,
+      storedEventCount: 1,
+      droppedEventCount: 0,
+      events: [
+        {
+          type: "api",
+          step: 1,
+          calledAt: "2026-05-15T10:00:10.000Z",
+          relativeToStartMs: 10000,
+          page: { url: "https://site.test/form", title: "Form" },
+          method: "POST",
+          url: "https://site.test/api/orders",
+          status: 201,
+          contentType: "application/json",
+          requestHeaders: { "Content-Type": "application/json" },
+          requestBody: '{"itemId":1}',
+          responseHeaders: { ETag: "v1" },
+          responseBody: '{"id":42,"ok":true}',
+          responseShape: {
+            type: "object",
+            properties: {
+              id: { type: "integer" },
+              ok: { type: "boolean" }
+            }
+          },
+          responsePreview: "object: id, ok",
+          initiatorStack: "stack"
+        }
+      ]
+    });
+
+    expect(payload).toEqual({
+      specVersion: "widgetron.process-export.v1",
+      exportProfile: "llm-compact",
+      process: {
+        id: "process-1",
+        name: "Оформление заявки",
+        status: "stopped",
+        origin: "https://site.test",
+        startedAt: "2026-05-15T10:00:00.000Z",
+        stoppedAt: "2026-05-15T10:01:00.000Z",
+        page: { url: "https://site.test/form", title: "Form" },
+        eventCount: 1,
+        storedEventCount: 1,
+        droppedEventCount: 0
+      },
+      omittedFromCompactExport: {
+        requestHeaders: true,
+        responseHeaders: true,
+        responseBodies: true,
+        initiatorStacks: true,
+        note: "Full local details remain in the process viewer; this export is sized for LLM context."
+      },
+      limits: {
+        requestBodyChars: 1600,
+        urlChars: 1200,
+        jsonDepth: 5,
+        jsonProperties: 24,
+        jsonArrayItems: 8
+      },
+      apiFlow: [
+        {
+          step: 1,
+          calledAt: "2026-05-15T10:00:10.000Z",
+          relativeToStartMs: 10000,
+          request: {
+            method: "POST",
+            url: "https://site.test/api/orders",
+            body: '{"itemId":1}'
+          },
+          response: {
+            status: 201,
+            contentType: "application/json",
+            preview: "object: id, ok",
+            schema: {
+              type: "object",
+              properties: {
+                id: { type: "integer", examples: [42] },
+                ok: { type: "boolean", examples: [true] }
+              }
+            },
+            bodyOmitted: true
+          }
+        }
+      ]
+    });
+  });
+
+  it("buildProcessExportPayload trims large process details for LLM context", () => {
+    const payload = viewer.buildProcessExportPayload({
+      processId: "process-2",
+      name: "Большой процесс",
+      origin: "https://site.test",
+      events: [
+        {
+          type: "api",
+          step: 1,
+          method: "POST",
+          url: `https://site.test/api/search?${Array.from({ length: 12 }, (_, index) => `param${index}=value-${"x".repeat(200)}`).join("&")}`,
+          status: 200,
+          contentType: "application/json",
+          requestHeaders: { Authorization: "secret", "Content-Type": "application/json" },
+          requestBody: JSON.stringify({
+            items: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, text: "x".repeat(400) }))
+          }),
+          responseHeaders: { ETag: "v1" },
+          responseBody: JSON.stringify({ rows: Array.from({ length: 100 }, (_, index) => ({ id: index + 1 })) }),
+          responsePreview: "object: rows",
+          initiatorStack: "stack".repeat(1000)
+        }
+      ]
+    });
+
+    expect(payload.apiFlow[0].request.url.length).toBeLessThanOrEqual(1200);
+    expect(payload.apiFlow[0].request.body.length).toBeLessThanOrEqual(1600);
+    expect(payload.apiFlow[0].request.headers).toBeUndefined();
+    expect(payload.apiFlow[0].request.initiatorStack).toBeUndefined();
+    expect(payload.apiFlow[0].response.headers).toBeUndefined();
+    expect(payload.apiFlow[0].response.body).toBeUndefined();
+    expect(payload.apiFlow[0].response.bodyOmitted).toBe(true);
+    expect(JSON.stringify(payload)).not.toContain("Authorization");
+    expect(JSON.stringify(payload)).not.toContain("stackstack");
   });
 });
 
