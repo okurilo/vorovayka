@@ -286,6 +286,10 @@ h2 {
   gap: 10px;
 }
 
+.meta-grid--process {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .metric {
   min-width: 0;
   padding: 14px;
@@ -310,6 +314,11 @@ h2 {
   gap: 12px;
 }
 
+.process-timeline {
+  display: grid;
+  gap: 12px;
+}
+
 .api-card {
   padding: 14px;
   border: 1px solid var(--line);
@@ -322,6 +331,21 @@ h2 {
   justify-content: space-between;
   gap: 8px;
   align-items: flex-start;
+}
+
+.process-event__title {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.process-event__title strong {
+  word-break: break-word;
+}
+
+.process-warning {
+  margin: 14px 0 0;
 }
 
 .api-pick {
@@ -442,6 +466,10 @@ button:disabled {
   }
 
   .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .meta-grid--process {
     grid-template-columns: 1fr;
   }
 

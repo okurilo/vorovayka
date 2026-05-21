@@ -68,11 +68,39 @@
         </div>
       </section>
 
-      <section class="actions">
+      <section class="actions actions--mode" aria-label="Действия с виджетом">
         <button id="startButton" type="button" class="button-primary">Выбрать элемент</button>
-        <button id="viewerButton" type="button" class="button-secondary">Открыть рабочую область</button>
+        <button id="viewerButton" type="button" class="button-secondary">Рабочая область</button>
         <button id="copyButton" type="button" class="button-tertiary">Скопировать захват</button>
         <button id="clearButton" type="button" class="button-ghost">Очистить данные</button>
+      </section>
+
+      <section class="panel panel--process">
+        <div class="capture-head">
+          <div>
+            <p class="panel__eyebrow">Запись процесса</p>
+            <strong class="panel__title">API-сценарий</strong>
+          </div>
+          <span id="processBadge" class="badge badge--muted">Не идёт</span>
+        </div>
+
+        <label class="process-name">
+          <span>Название</span>
+          <input id="processNameInput" type="text" maxlength="80" placeholder="Например, оформление заявки" />
+        </label>
+
+        <p id="processSummary" class="summary-line">Запись ещё не запускалась.</p>
+
+        <div class="status-line">
+          <span id="processApiBadge" class="badge badge--muted">API 0</span>
+          <span id="processTimeBadge" class="badge badge--muted">Нет записи</span>
+        </div>
+      </section>
+
+      <section class="actions actions--mode" aria-label="Действия с процессом">
+        <button id="processStartButton" type="button" class="button-primary">Старт процесса</button>
+        <button id="processStopButton" type="button" class="button-secondary">Стоп процесса</button>
+        <button id="processViewerButton" type="button" class="button-tertiary actions__wide">Страница процесса</button>
       </section>
 
       <p id="message" class="message" aria-live="polite"></p>

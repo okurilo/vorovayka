@@ -9,6 +9,11 @@ const selectionSummaryEl = document.getElementById("selectionSummary");
 const selectionBadge = document.getElementById("selectionBadge");
 const apiCountBadge = document.getElementById("apiCountBadge");
 const captureTimeBadge = document.getElementById("captureTimeBadge");
+const processBadge = document.getElementById("processBadge");
+const processNameInput = document.getElementById("processNameInput");
+const processSummaryEl = document.getElementById("processSummary");
+const processApiBadge = document.getElementById("processApiBadge");
+const processTimeBadge = document.getElementById("processTimeBadge");
 const modeNormal = document.getElementById("modeNormal");
 const modePro = document.getElementById("modePro");
 const armedToggle = document.getElementById("armedToggle");
@@ -16,6 +21,9 @@ const startButton = document.getElementById("startButton");
 const copyButton = document.getElementById("copyButton");
 const viewerButton = document.getElementById("viewerButton");
 const clearButton = document.getElementById("clearButton");
+const processStartButton = document.getElementById("processStartButton");
+const processStopButton = document.getElementById("processStopButton");
+const processViewerButton = document.getElementById("processViewerButton");
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
 const CAPTURE_REF_MARK = "__widgetronCaptureRef";
@@ -130,6 +138,44 @@ clearButton.addEventListener("click", async () => {
   await refreshState();
 });
 
+processStartButton.addEventListener("click", async () => {
+  setMessage("Запускаю запись процесса...");
+  setBusy(true);
+  const result = await chrome.runtime.sendMessage({
+    type: "START_PROCESS_RECORDING",
+    name: processNameInput.value
+  });
+
+  if (!result?.ok) {
+    setMessage(result?.error || "Не удалось запустить запись процесса.");
+    await refreshState();
+    return;
+  }
+
+  setMessage("Запись процесса началась.");
+  await refreshState();
+  window.close();
+});
+
+processStopButton.addEventListener("click", async () => {
+  setMessage("Останавливаю запись процесса...");
+  setBusy(true);
+  const result = await chrome.runtime.sendMessage({ type: "STOP_PROCESS_RECORDING" });
+  if (!result?.ok) {
+    setMessage(result?.error || "Не удалось остановить запись процесса.");
+    await refreshState();
+    return;
+  }
+
+  setMessage("Запись процесса остановлена.");
+  await refreshState();
+});
+
+processViewerButton.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "OPEN_PROCESS_VIEWER" });
+  setMessage("Страница процесса открыта.");
+});
+
 void refreshState();
 
 async function refreshState() {
@@ -169,6 +215,9 @@ function renderState() {
   const hasCopyableCapture = Boolean(popupState?.hasCopyableCapture);
   const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
   const summary = popupState?.captureSummary || null;
+  const processRecording = popupState?.processRecording || {};
+  const isRecording = Boolean(processRecording.active);
+  const hasProcessRecording = Boolean(processRecording.processId || processRecording.eventCount || processRecording.startedAt);
 
   const originText = popupState?.origin ? simplifyOrigin(popupState.origin) : "Неподдерживаемая вкладка";
 
@@ -190,6 +239,12 @@ function renderState() {
   copyButton.hidden = !isPro;
   clearButton.hidden = !isPro;
   renderCaptureSummary(summary, hasAnyCapture);
+  renderProcessSummary(processRecording, {
+    isSupported,
+    isArmed,
+    isRecording,
+    hasProcessRecording
+  });
 
   if (!messageEl.textContent) {
     if (hasLatestCapture) {
@@ -235,8 +290,51 @@ function renderCaptureSummary(summary, hasAnyCapture) {
   captureTimeBadge.textContent = formatCaptureTime(summary.capturedAt);
 }
 
+function renderProcessSummary(processRecording, flags) {
+  const { isSupported, isArmed, isRecording, hasProcessRecording } = flags;
+  const isCurrentOriginRecording = Boolean(isRecording && processRecording.origin === popupState?.origin);
+
+  processBadge.textContent = isRecording ? "Идёт запись" : hasProcessRecording ? "Есть процесс" : "Не идёт";
+  processBadge.className = `badge ${isRecording ? "badge--active" : "badge--muted"}`;
+  processApiBadge.textContent = `API ${processRecording.eventCount || 0}`;
+  processApiBadge.className = `badge ${processRecording.eventCount ? "badge--active" : "badge--muted"}`;
+  processTimeBadge.textContent = isRecording
+    ? formatCaptureTime(processRecording.startedAt)
+    : formatCaptureTime(processRecording.stoppedAt || processRecording.startedAt);
+
+  if (processRecording.name && !processNameInput.value && !isRecording) {
+    processNameInput.value = processRecording.name;
+  }
+
+  if (isRecording) {
+    const place = processRecording.origin === popupState?.origin
+      ? "текущем сайте"
+      : simplifyOrigin(processRecording.origin || "");
+    processSummaryEl.textContent = `${processRecording.name || "Процесс"} · запись на ${place}`;
+  } else if (hasProcessRecording) {
+    processSummaryEl.textContent = `${processRecording.name || "Процесс"} · сохранено API-событий: ${processRecording.eventCount || 0}`;
+  } else {
+    processSummaryEl.textContent = "Запись ещё не запускалась.";
+  }
+
+  processNameInput.disabled = isRecording;
+  processStartButton.disabled = !isSupported || !isArmed || isRecording;
+  processStopButton.disabled = !isRecording;
+  processViewerButton.disabled = !hasProcessRecording;
+
+  processStartButton.title = !isSupported || !isArmed
+    ? "Сначала включите сбор запросов для текущего сайта."
+    : "";
+  processStopButton.title = isRecording && !isCurrentOriginRecording
+    ? "Можно остановить активную запись даже с другой вкладки."
+    : "";
+}
+
 function setBusy(isBusy) {
   const hasAnyCapture = Boolean(popupState?.hasAnyCapture);
+  const processRecording = popupState?.processRecording || {};
+  const isRecording = Boolean(processRecording.active);
+  const hasProcessRecording = Boolean(processRecording.processId || processRecording.eventCount || processRecording.startedAt);
   armedToggle.disabled = isBusy || !popupState?.isSupportedPage;
   modeNormal.disabled = isBusy;
   modePro.disabled = isBusy;
@@ -244,6 +342,10 @@ function setBusy(isBusy) {
   copyButton.disabled = isBusy || !hasAnyCapture;
   viewerButton.disabled = isBusy;
   clearButton.disabled = isBusy || !hasAnyCapture;
+  processNameInput.disabled = isBusy || isRecording;
+  processStartButton.disabled = isBusy || !popupState?.isSupportedPage || !popupState?.isArmed || isRecording;
+  processStopButton.disabled = isBusy || !isRecording;
+  processViewerButton.disabled = isBusy || !hasProcessRecording;
 }
 
 function setMessage(text) {

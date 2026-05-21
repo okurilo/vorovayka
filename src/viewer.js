@@ -7,8 +7,18 @@ const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 const MAX_OPENAPI_SCHEMA_DEPTH = 8;
 const MAX_OPENAPI_SCHEMA_PROPERTIES = 64;
 const MAX_SCHEMA_EXAMPLES_PER_FIELD = 3;
+const PROCESS_EXPORT_REQUEST_BODY_CHARS = 1600;
+const PROCESS_EXPORT_URL_CHARS = 1200;
+const PROCESS_EXPORT_STRING_CHARS = 240;
+const PROCESS_EXPORT_JSON_DEPTH = 5;
+const PROCESS_EXPORT_JSON_PROPERTIES = 24;
+const PROCESS_EXPORT_JSON_ARRAY_ITEMS = 8;
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (isProcessViewMode()) {
+    return;
+  }
+
   if (area !== "local" || !changes[LATEST_CAPTURE_STORAGE_KEY]?.newValue) {
     return;
   }
@@ -21,6 +31,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 init();
 
 async function init() {
+  if (isProcessViewMode()) {
+    await renderProcessRecordingPage();
+    return;
+  }
+
   const stored = await chrome.storage.local.get([LATEST_CAPTURE_STORAGE_KEY, COPYABLE_CAPTURE_STORAGE_KEY]);
   if (stored[LATEST_CAPTURE_STORAGE_KEY]) {
     await renderStoredCapture(stored[LATEST_CAPTURE_STORAGE_KEY], {
@@ -33,6 +48,14 @@ async function init() {
   if (stored[COPYABLE_CAPTURE_STORAGE_KEY]) {
     const capture = await resolveStoredCapture(stored[COPYABLE_CAPTURE_STORAGE_KEY]);
     renderCapture(capture || stored[COPYABLE_CAPTURE_STORAGE_KEY]);
+  }
+}
+
+function isProcessViewMode() {
+  try {
+    return new URLSearchParams(location.search || "").get("mode") === "process";
+  } catch {
+    return false;
   }
 }
 
@@ -106,6 +129,343 @@ function renderCapture(capture) {
     rawJsonPanelEl.open = false;
   }
   jsonEl.textContent = JSON.stringify(capture, null, 2);
+}
+
+async function renderProcessRecordingPage() {
+  stateEl.innerHTML = "";
+
+  const response = await chrome.runtime.sendMessage({ type: "GET_PROCESS_RECORDING" }).catch(() => null);
+  const recording = normalizeProcessRecording(response?.recording);
+
+  if (!recording) {
+    stateEl.innerHTML = "<section class=\"card\"><p>Запись процесса ещё не создана.</p></section>";
+    jsonEl.textContent = "";
+    return;
+  }
+
+  const root = document.createElement("div");
+  root.className = "viewer-grid";
+  root.append(
+    renderProcessOverview(recording),
+    renderProcessTimeline(recording),
+    renderProcessExportSection(recording)
+  );
+  stateEl.appendChild(root);
+  if (rawJsonPanelEl) {
+    rawJsonPanelEl.open = false;
+  }
+  jsonEl.textContent = JSON.stringify(recording, null, 2);
+}
+
+function normalizeProcessRecording(recording) {
+  if (!recording || !Array.isArray(recording.events)) {
+    return null;
+  }
+
+  return {
+    specVersion: recording.specVersion || "widgetron.process-recording.v1",
+    processId: recording.processId || recording.id || "",
+    name: recording.name || "Процесс",
+    status: recording.status || "stopped",
+    origin: recording.origin || "",
+    startedAt: recording.startedAt || "",
+    stoppedAt: recording.stoppedAt || "",
+    page: recording.page || {},
+    eventCount: Number(recording.eventCount || recording.events.length || 0),
+    storedEventCount: Number(recording.storedEventCount || recording.events.length || 0),
+    droppedEventCount: Number(recording.droppedEventCount || 0),
+    events: recording.events
+  };
+}
+
+function renderProcessOverview(recording) {
+  const section = document.createElement("section");
+  section.className = "card overview";
+
+  section.innerHTML = `
+    <div class="section-head">
+      <div>
+        <h2>${escapeHtml(recording.name)}</h2>
+        <p class="section-copy">${escapeHtml(recording.origin || recording.page?.url || "Домен не указан")}</p>
+      </div>
+      <span class="pill">${escapeHtml(recording.status === "recording" ? "Идёт запись" : "Остановлено")}</span>
+    </div>
+    <div class="meta-grid meta-grid--process">
+      ${renderMetric("Старт", formatCapturedAt(recording.startedAt))}
+      ${renderMetric("Стоп", recording.stoppedAt ? formatCapturedAt(recording.stoppedAt) : "Идёт сейчас")}
+      ${renderMetric("API-события", String(recording.eventCount || 0))}
+      ${renderMetric("В хранилище", String(recording.storedEventCount || recording.events.length || 0))}
+    </div>
+  `;
+
+  if (recording.droppedEventCount > 0) {
+    const warning = document.createElement("p");
+    warning.className = "section-copy process-warning";
+    warning.textContent = `Первые ${recording.droppedEventCount} событий вытеснены лимитом локальной записи.`;
+    section.appendChild(warning);
+  }
+
+  return section;
+}
+
+function renderProcessTimeline(recording) {
+  const section = document.createElement("section");
+  section.className = "card";
+
+  const apiEvents = recording.events.filter((event) => event.type === "api");
+  section.innerHTML = `
+    <div class="section-head">
+      <div>
+        <h2>Хронология API</h2>
+        <p class="section-copy">Последовательность вызовов, request/response данные и источник вызова для восстановления процесса.</p>
+      </div>
+      <span class="count-badge">${escapeHtml(String(apiEvents.length))}</span>
+    </div>
+  `;
+
+  if (!apiEvents.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Во время записи API-вызовы ещё не накоплены.";
+    section.appendChild(empty);
+    return section;
+  }
+
+  const list = document.createElement("div");
+  list.className = "process-timeline";
+  apiEvents.forEach((event) => {
+    const card = document.createElement("article");
+    card.className = "api-card process-event";
+    card.innerHTML = `
+      <div class="api-card__top">
+        <div class="process-event__title">
+          <span class="count-badge">#${escapeHtml(String(event.step || ""))}</span>
+          <strong>${escapeHtml(event.method || "GET")} ${escapeHtml(shortenUrl(event.url || ""))}</strong>
+        </div>
+        <span class="api-status">Статус ${escapeHtml(String(event.status || "?"))}</span>
+      </div>
+      <p class="api-copy">${escapeHtml(event.responsePreview || "Короткое превью ответа недоступно.")}</p>
+      <p class="api-copy">${escapeHtml(formatProcessEventTiming(event))}</p>
+      <details class="api-details">
+        <summary>Request / response</summary>
+        <div class="api-detail-grid">
+          ${renderCodeBlock("Request body", event.requestBody || "—")}
+          ${renderCodeBlock("Response body", event.responseBody || "—")}
+          ${renderCodeBlock("Initiator stack", event.initiatorStack || "—")}
+        </div>
+      </details>
+    `;
+    list.appendChild(card);
+  });
+
+  section.appendChild(list);
+  return section;
+}
+
+function renderProcessExportSection(recording) {
+  const section = document.createElement("section");
+  section.className = "card";
+  section.innerHTML = `
+    <div class="section-head">
+      <div>
+        <h2>Экспорт процесса</h2>
+        <p class="section-copy">LLM-компактный payload: порядок API, короткие request body, response preview и схемы без сырых response body.</p>
+      </div>
+    </div>
+  `;
+
+  const actions = document.createElement("div");
+  actions.className = "export-actions";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Скопировать процесс";
+  const status = document.createElement("span");
+  status.className = "export-status";
+  actions.append(copyButton, status);
+
+  const preview = document.createElement("pre");
+  preview.className = "export-preview";
+  const payload = buildProcessExportPayload(recording);
+  preview.textContent = JSON.stringify(payload, null, 2);
+
+  copyButton.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      status.textContent = "Скопировано.";
+    } catch {
+      status.textContent = "Не удалось скопировать.";
+    }
+  });
+
+  section.append(actions, preview);
+  return section;
+}
+
+function buildProcessExportPayload(recording) {
+  const normalized = normalizeProcessRecording(recording);
+  if (!normalized) {
+    return null;
+  }
+
+  const apiEvents = normalized.events.filter((event) => event.type === "api");
+  return {
+    specVersion: "widgetron.process-export.v1",
+    exportProfile: "llm-compact",
+    process: {
+      id: normalized.processId,
+      name: normalized.name,
+      status: normalized.status,
+      origin: normalized.origin,
+      startedAt: normalized.startedAt,
+      stoppedAt: normalized.stoppedAt,
+      page: normalized.page,
+      eventCount: normalized.eventCount,
+      storedEventCount: normalized.storedEventCount,
+      droppedEventCount: normalized.droppedEventCount
+    },
+    omittedFromCompactExport: {
+      requestHeaders: true,
+      responseHeaders: true,
+      responseBodies: true,
+      initiatorStacks: true,
+      note: "Full local details remain in the process viewer; this export is sized for LLM context."
+    },
+    limits: {
+      requestBodyChars: PROCESS_EXPORT_REQUEST_BODY_CHARS,
+      urlChars: PROCESS_EXPORT_URL_CHARS,
+      jsonDepth: PROCESS_EXPORT_JSON_DEPTH,
+      jsonProperties: PROCESS_EXPORT_JSON_PROPERTIES,
+      jsonArrayItems: PROCESS_EXPORT_JSON_ARRAY_ITEMS
+    },
+    apiFlow: apiEvents.map((event, index) => ({
+      step: event.step || index + 1,
+      calledAt: event.calledAt || (event.timestamp ? new Date(Number(event.timestamp)).toISOString() : ""),
+      relativeToStartMs: Number.isFinite(Number(event.relativeToStartMs)) ? Number(event.relativeToStartMs) : null,
+      request: {
+        method: event.method || "GET",
+        url: compactProcessExportUrl(event.url || ""),
+        body: compactProcessExportBody(event.requestBody, event.contentType, PROCESS_EXPORT_REQUEST_BODY_CHARS)
+      },
+      response: {
+        status: event.status || 0,
+        contentType: event.contentType || "",
+        preview: event.responsePreview || buildResponsePreview(event.responseBody, event.contentType),
+        schema: buildProcessResponseSchema(event),
+        bodyOmitted: Boolean(event.responseBody)
+      }
+    }))
+  };
+}
+
+function compactProcessExportUrl(url) {
+  const text = String(url || "");
+  if (!text) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(text);
+    const params = Array.from(parsed.searchParams.entries());
+    if (!params.length && text.length <= PROCESS_EXPORT_URL_CHARS) {
+      return text;
+    }
+
+    const keptParams = params.slice(0, 10).map(([key, value]) => [
+      truncateProcessExportText(key, 60),
+      truncateProcessExportText(value, 160)
+    ]);
+    if (params.length > keptParams.length) {
+      keptParams.push(["__omittedParams", String(params.length - keptParams.length)]);
+    }
+    parsed.search = new URLSearchParams(keptParams).toString();
+    return truncateProcessExportText(parsed.toString(), PROCESS_EXPORT_URL_CHARS);
+  } catch {
+    return truncateProcessExportText(text, PROCESS_EXPORT_URL_CHARS);
+  }
+}
+
+function compactProcessExportBody(body, contentType, maxChars) {
+  const text = String(body || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = parseJsonBody(text, contentType);
+  if (parsed !== null || text === "null") {
+    const compact = compactJsonValueForProcessExport(parsed);
+    return truncateProcessExportText(JSON.stringify(compact), maxChars);
+  }
+
+  return truncateProcessExportText(text, maxChars);
+}
+
+function compactJsonValueForProcessExport(value, depth = 0) {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return truncateProcessExportText(value, PROCESS_EXPORT_STRING_CHARS);
+  }
+
+  if (depth >= PROCESS_EXPORT_JSON_DEPTH) {
+    return Array.isArray(value) ? "[array omitted by depth]" : "{object omitted by depth}";
+  }
+
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, PROCESS_EXPORT_JSON_ARRAY_ITEMS)
+      .map((item) => compactJsonValueForProcessExport(item, depth + 1));
+    if (value.length > items.length) {
+      items.push(`...[${value.length - items.length} items omitted]`);
+    }
+    return items;
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    const compact = {};
+    entries.slice(0, PROCESS_EXPORT_JSON_PROPERTIES).forEach(([key, item]) => {
+      compact[key] = compactJsonValueForProcessExport(item, depth + 1);
+    });
+    if (entries.length > PROCESS_EXPORT_JSON_PROPERTIES) {
+      compact.__omittedKeys = entries.length - PROCESS_EXPORT_JSON_PROPERTIES;
+    }
+    return compact;
+  }
+
+  return String(value);
+}
+
+function truncateProcessExportText(value, maxChars) {
+  const text = String(value || "");
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxChars - 15))}...[truncated]`;
+}
+
+function buildProcessResponseSchema(event) {
+  if (event?.responseShape && Object.keys(event.responseShape).length > 0) {
+    const parsed = parseJsonBody(event.responseBody, event.contentType);
+    const rawBody = String(event.responseBody || "").trim();
+    const sampleValue = parsed !== null || rawBody === "null" ? parsed : undefined;
+    return normalizeSchemaShape(event.responseShape, sampleValue, event.contentType);
+  }
+
+  return extractResponseShape(event);
+}
+
+function formatProcessEventTiming(event) {
+  const parts = [];
+  if (event.calledAt) {
+    parts.push(new Date(event.calledAt).toLocaleString("ru-RU"));
+  }
+  if (Number.isFinite(Number(event.relativeToStartMs))) {
+    parts.push(`${event.relativeToStartMs} ms от старта`);
+  }
+  return parts.join(" · ") || "Время вызова не записано";
 }
 
 function normalizeCaptureBundle(capture) {

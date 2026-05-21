@@ -2,6 +2,7 @@
 const ARMED_ORIGINS_KEY = "armedOrigins";
 const LATEST_CAPTURE_STORAGE_KEY = "latestCapture";
 const COPYABLE_CAPTURE_STORAGE_KEY = "copyableCapture";
+const PROCESS_RECORDING_STATE_KEY = "processRecordingState";
 const CAPTURE_REF_MARK = "__widgetronCaptureRef";
 const CAPTURE_MODE_NORMAL = "normal";
 const CAPTURE_MODE_PRO = "pro";
@@ -164,6 +165,7 @@ let highlightBox = null;
 let modal = null;
 let mutationObserver = null;
 let mutationSeq = 0;
+let processRecording = null;
 
 window.addEventListener("message", handlePageMessage);
 chrome.runtime.onMessage.addListener((message) => {
@@ -180,19 +182,35 @@ chrome.runtime.onMessage.addListener((message) => {
 
     startSelection(currentCaptureMode);
   }
+
+  if (message?.type === "START_PROCESS_RECORDING") {
+    startProcessRecording(message.recording);
+  }
+
+  if (message?.type === "STOP_PROCESS_RECORDING") {
+    stopProcessRecording();
+  }
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes[ARMED_ORIGINS_KEY]) {
+  if (area !== "local") {
     return;
   }
 
-  const next = changes[ARMED_ORIGINS_KEY].newValue;
-  captureEnabled = isOriginArmed(next);
-  if (captureEnabled) {
-    injectPageScript();
-    startMutationTrace();
-  } else {
-    stopMutationTrace();
+  if (changes[ARMED_ORIGINS_KEY]) {
+    const next = changes[ARMED_ORIGINS_KEY].newValue;
+    captureEnabled = isOriginArmed(next);
+    if (captureEnabled) {
+      injectPageScript();
+      startMutationTrace();
+      void syncProcessRecordingState();
+    } else {
+      stopProcessRecording();
+      stopMutationTrace();
+    }
+  }
+
+  if (changes[PROCESS_RECORDING_STATE_KEY]) {
+    startProcessRecording(changes[PROCESS_RECORDING_STATE_KEY].newValue);
   }
 });
 
@@ -205,6 +223,7 @@ async function initializeCapture() {
   if (captureEnabled) {
     injectPageScript();
     startMutationTrace();
+    await syncProcessRecordingState();
   }
 }
 
@@ -357,6 +376,89 @@ function handlePageMessage(event) {
   if (networkBuffer.length > MAX_BUFFER_SIZE) {
     networkBuffer.shift();
   }
+
+  appendProcessNetworkRecord(record);
+}
+
+async function syncProcessRecordingState() {
+  if (!captureEnabled) {
+    stopProcessRecording();
+    return;
+  }
+
+  const response = await chrome.runtime.sendMessage({ type: "GET_PROCESS_RECORDING_STATE" }).catch(() => null);
+  startProcessRecording(response?.state);
+}
+
+function startProcessRecording(state) {
+  if (!captureEnabled || !isActiveProcessForCurrentOrigin(state)) {
+    stopProcessRecording();
+    return;
+  }
+
+  processRecording = {
+    id: state.id || "",
+    processId: state.processId || "",
+    name: state.name || "Процесс",
+    origin: state.origin || location.origin,
+    startedAt: state.startedAt || ""
+  };
+}
+
+function stopProcessRecording() {
+  processRecording = null;
+}
+
+function isActiveProcessForCurrentOrigin(state) {
+  return Boolean(
+    state?.active &&
+    state.origin === location.origin &&
+    state.status === "recording"
+  );
+}
+
+function appendProcessNetworkRecord(record) {
+  if (!processRecording || !captureEnabled) {
+    return;
+  }
+
+  const event = buildProcessApiEvent(record);
+  if (!event) {
+    return;
+  }
+
+  chrome.runtime.sendMessage({
+    type: "APPEND_PROCESS_RECORDING_EVENT",
+    event
+  }).catch(() => null);
+}
+
+function buildProcessApiEvent(record) {
+  if (!record?.url) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    type: "api",
+    timestamp: record.timestamp || Date.now(),
+    page: {
+      url: location.href,
+      title: document.title || ""
+    },
+    method: record.method || "GET",
+    url: record.url,
+    status: record.status || 0,
+    contentType: record.contentType || "",
+    requestHeaders: record.requestHeaders || {},
+    requestBody: record.requestBody || "",
+    responseHeaders: record.responseHeaders || {},
+    responseBody: record.responseBody || "",
+    responsePreview: buildResponsePreview(record.responseBody, record.contentType),
+    responseShape: extractResponseShape(record),
+    initiatorStack: record.initiatorStack || "",
+    bodyTooLarge: Boolean(record.bodyTooLarge)
+  };
 }
 
 function normalizeNetworkRecord(payload) {
